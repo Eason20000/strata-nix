@@ -38,9 +38,7 @@
 let
   rocm = rocmPackages;
 
-  # The tag. The engine is 0.1.40 (setup.py's MIN_ENGINE); 0.1.40.1 is the Python-server hotfix on top of it,
-  # and setup.py reads a four-part version like this as 0.1.40.
-  version = "0.1.40.1";
+  version = "0.1.40.4";
   # The target list as a list. A semicolon-separated string is accepted too, which is what the
   # NixOS module's services.strata.hipArchs passes.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
@@ -54,7 +52,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-y+0Qn2KhyVFfQrZi1L9BzR7iqQoRHjkXO9W48VJO2QQ=";
+    hash = "sha256-F9e6Uq92DA9L1WTTrfPaVjQsNCLZACAQJ+g3CYYocmo=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the

@@ -7,7 +7,8 @@
   ensure formatting is consistent.
 - Do not deeply nest code. Keep it flat and easy to read where possible.
 - Do not add superfluous comments. Basic doc comments are fine. Explanatory
-  comments should be reserved for complex or non-intuitive logic.
+  comments should be reserved for complex or non-intuitive logic. In those cases,
+  keep comments short.
 - Keep implementation as simple as possible.
 - After making changes, review your code and look for opportunities to simplify
   or otherwise improve your changes.
