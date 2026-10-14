@@ -38,7 +38,7 @@
 let
   rocm = rocmPackages;
 
-  version = "0.1.43.1";
+  version = "0.1.44";
   # The target list as a list. A semicolon-separated string is accepted too, which is what the
   # NixOS module's services.strata.hipArchs passes.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
@@ -52,7 +52,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-ouJseBgkuS0WxgHgHw8vxuNNqR/B3W5yjbjfBzkBpqA=";
+    hash = "sha256-Yjlu2tRBYrabTp/hZvZh4QECJZSTJe8Bh2P6MqvQdX0=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the
