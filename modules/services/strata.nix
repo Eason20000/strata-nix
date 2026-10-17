@@ -1,10 +1,9 @@
 # The Strata service: the engine and its Python server as a systemd unit.
 #
-# The package is self-contained - engine, model, tokenizer, MTP draft layer, image encoder, ROCm runtime
-# - so the service needs nothing outside its closure except the GPU device nodes (/dev/kfd and /dev/dri)
-# and a writable directory for the engine's cwd. The engine config the server reads is the package's own
-# etc/strata/strata.json, merged here with the service's settings: the pins stay in the package, the
-# module only adds what a service has to know.
+# The package is self-contained, so the service needs nothing outside its closure except the GPU device
+# nodes (/dev/kfd and /dev/dri) and a writable directory for the engine's cwd. It runs on the package's own
+# etc/strata/strata.json with the service's settings merged in: the pins stay in the package, this module
+# adds only what a service has to know. The option descriptions below cover the rest.
 #
 # Import it from the flake (nixosModules.strata), then:
 #
@@ -12,31 +11,9 @@
 #   services.strata.apiKey = "a long random secret";   # or environment.STRATA_API_KEY
 #   services.strata.host = "0.0.0.0";                  # only if other devices should reach it
 #
-# The model size is the package's choice: services.strata.model builds the default package with one of the
-# sizes the pinned repository carries (IQ2_XS by default, IQ3_XXS, IQ3_S, Q2_0), and services.strata.package
-# takes any package instead, such as the flake's packages.strata-iq3-s. services.strata.prefillMmq is the
-# package's MMQ prompt path (on by default), which reaches the engine stage alone.
-#
-# services.strata.maxContext rewrites --max-context in the engine arguments and leaves the rest of them as
-# they are, so it composes with services.strata.engineArgs (it is applied after them). Past the model's
-# trained 262144 positions it adds the yarn rope scaling setup.py adds there; an explicit --rope-scaling in
-# engineArgs is kept instead.
-#
-# The API key is a secret: putting it in the Nix config puts it in the store. A machine that keeps the
-# key out of its configuration sets environment.STRATA_API_KEY some other way and leaves
-# services.strata.apiKey null - the server reads the variable when there is no --api-key.
-#
-# Without a key the server answers only requests whose Host is a loopback name (v0.1.38's DNS-rebinding
-# protection), so a keyless service reached under another name needs extraConfig.allowed_hosts =
-# [ "that.name" ]; with a key the check is off.
-#
-# Images are on because the package's config has a "vision" entry (and "--vision" in its args, which is what
-# lets the engine accept the encoder's requests): the server spawns the package's
-# strata-vision (the CPU image encoder for this backend) once and keeps it resident. extraConfig =
-# { vision = null; } turns that off for this machine, and --lazy must stay out of extraArgs - the server
-# refuses lazy loading while vision is configured. The encoder writes the pictures it encodes to a temp
-# directory, so the unit gets a private writable /tmp: ProtectSystem=strict makes everything else
-# read-only, and the store path the server runs from is no substitute.
+# Keyless servers answer only requests whose Host is a loopback name (v0.1.38's DNS-rebinding protection),
+# so one reached under another name needs extraConfig.allowed_hosts = [ "that.name" ]. A key in the Nix
+# config lands in the store, which is why apiKey defaults to null and the server reads the variable.
 
 {
   config,
@@ -276,10 +253,11 @@ in
       type = types.listOf types.str;
       default = [ ];
       example = [
-        "--lazy"
+        "--api-monitor"
         "--fit-max-tokens"
       ];
-      description = "Extra flags for serve.server (--lazy, --api-monitor, --idle-unload ...).";
+      description = "Extra flags for serve.server (--api-monitor, --idle-unload ...). --lazy is
+        refused while the config has a vision entry, so turn images off with extraConfig first.";
     };
 
     user = lib.mkOption {
