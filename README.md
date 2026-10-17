@@ -95,4 +95,6 @@ encoder for HIP. Turn images off by making `vision` null in the config the serve
 The unit runs as the `strata` user with the `render` and `video` groups, keeps `/dev/kfd` and `/dev/dri`
 visible, allows unlimited memlock, and has no start timeout (loading the model takes minutes). Its working
 directory is `/var/lib/strata`, the only writable place. `services.strata.package` takes any package
-instead, such as `packages.strata-iq3-s`.
+instead, such as `packages.strata-iq3-s`, and `services.strata.maxContext` sets the context window (the
+package's 131072 by default) — past the model's trained 262144 it adds yarn rope scaling, as `setup.py`
+does.

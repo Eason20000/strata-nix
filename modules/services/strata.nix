@@ -17,6 +17,11 @@
 # takes any package instead, such as the flake's packages.strata-iq3-s. services.strata.prefillMmq is the
 # package's MMQ prompt path (on by default), which reaches the engine stage alone.
 #
+# services.strata.maxContext rewrites --max-context in the engine arguments and leaves the rest of them as
+# they are, so it composes with services.strata.engineArgs (it is applied after them). Past the model's
+# trained 262144 positions it adds the yarn rope scaling setup.py adds there; an explicit --rope-scaling in
+# engineArgs is kept instead.
+#
 # The API key is a secret: putting it in the Nix config puts it in the store. A machine that keeps the
 # key out of its configuration sets environment.STRATA_API_KEY some other way and leaves
 # services.strata.apiKey null - the server reads the variable when there is no --api-key.
@@ -44,6 +49,10 @@ let
   cfg = config.services.strata;
   types = lib.types;
 
+  # The longest context the model was trained on. Past it the rotary angles have to be rescaled, and
+  # setup.py's answer there is yarn with the factor the final context over the trained one.
+  trainedContext = 262144;
+
   # The config is written at build time, from the package's own file: the package is an input of this
   # derivation, so the store paths inside the config are real dependencies rather than text. (A
   # string read from the store at eval time carries no context and cannot be written back out.)
@@ -60,11 +69,34 @@ let
           --argjson extra '${builtins.toJSON cfg.extraConfig}' \
           --argjson args '${builtins.toJSON cfg.engineArgs}' \
           --argjson model '${builtins.toJSON cfg.modelName}' \
-          '$base[0]
-            + { cwd: $cwd, env: (($base[0].env // {}) + $env) }
-            + (if $args != null then { args: $args } else {} end)
-            + (if $model != null then { model_name: $model } else {} end)
-            + $extra' > $out
+          --argjson ctx '${builtins.toJSON cfg.maxContext}' \
+          --argjson trained '${toString trainedContext}' \
+          '# rewrite one flag: drop every occurrence of it and the value that follows it, then append
+           # ours, so a flag repeated in engineArgs cannot win (the engine keeps the last one it sees)
+           def set_arg($name; $val):
+             . as $a
+             | [ range(0; $a | length) as $i
+                 | select($a[$i] != $name and ($i == 0 or $a[$i - 1] != $name))
+                 | $a[$i] ]
+               + [ $name, $val ];
+           # the context flags to write: --max-context, and past the trained length the yarn scaling
+           # setup.py adds - unless the args already choose a rope method, which wins as it does there
+           def context_args($tokens; $trained):
+             [ [ "--max-context", ($tokens | tostring) ] ]
+             + (if $tokens > $trained and (any(.[]; . == "--rope-scaling") | not)
+                then [ [ "--rope-scaling", "yarn" ], [ "--rope-scale", ($tokens / $trained | tostring) ] ]
+                else []
+                end);
+           def engine_args($base):
+             (if $args != null then $args else ($base.args // []) end)
+             | (if $ctx == null then [] else context_args($ctx; $trained) end) as $set
+             | reduce $set[] as $kv (.; set_arg($kv[0]; $kv[1]));
+           $base[0]
+             + { cwd: $cwd,
+                 env: (($base[0].env // {}) + $env),
+                 args: engine_args($base[0]) }
+             + (if $model != null then { model_name: $model } else {} end)
+             + $extra' > $out
       '';
 
   # strata-server passes its own --config first; argparse takes the last one, so this one wins
@@ -180,6 +212,21 @@ in
       default = "/var/lib/strata";
       description = "The engine's working directory: the only place it can write, since the package
         itself is a read-only store path. Created by StateDirectory.";
+    };
+
+    maxContext = lib.mkOption {
+      type = types.nullOr types.ints.positive;
+      default = null;
+      example = 32768;
+      description = "The context window in tokens: how much one request can hold (the conversation, the files,
+        the tool output). Null: the package's own, 131072. It rewrites --max-context in the engine arguments
+        and leaves the rest of them as they are, so it composes with services.strata.engineArgs, which it is
+        applied after. The sizes setup.py offers are 8192, 32768, 65536, 131072, 204800, 262144, 393216 and
+        524288: the KV cache grows with the context and takes VRAM the resident experts would otherwise hold,
+        and past 131072 the experts plus the cache want more RAM than a 64 GB PC has. The model is trained to
+        262144 positions; a larger context also gets yarn rope scaling with the factor the context over
+        262144, as setup.py writes it there - an explicit --rope-scaling in engineArgs (linear, or yarn with a
+        --rope-scale of your own) is left alone.";
     };
 
     engineArgs = lib.mkOption {
