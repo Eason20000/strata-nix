@@ -38,7 +38,7 @@
 let
   rocm = rocmPackages;
 
-  version = "0.1.44.1";
+  version = "0.1.45";
   # The target list as a list. A semicolon-separated string is accepted too, which is what the
   # NixOS module's services.strata.hipArchs passes.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
@@ -52,7 +52,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-Jfo2uldtyXW8Y/wQxA7WcYwtmzCGAOaXgnlMSo7K9LE=";
+    hash = "sha256-YfCpJ+iSbs8hSGzWtTr/fNJYRjUjS+ed7U7TNiaDBJU=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the
@@ -289,6 +289,8 @@ let
   #   rocm-comgr  libamdcomgr (LLVM bitcode compilation at load time)
   #   rocm-runtime the remaining runtime libraries
   #   hip-common  the HIP headers hipcc includes
+  # rocBLAS is deliberately absent: CMakeLists.txt finds it only for the gfx103x solution table
+  # (STRATA_ROCBLAS_TUNING), and configure reports "not found" as a status, not an error.
   rocmLibs = [
     rocm.clr
     rocm.hipblas
