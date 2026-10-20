@@ -1,11 +1,12 @@
 # Strata: the inference engine (HIP) and its Python server, with the model (IQ2_XS by default), its
-# derived tokenizer, the MTP draft layer and the image encoder, every download a pinned fetchurl.
+# derived tokenizer, the MTP draft layer and the image encoders (CPU and GPU), every download a pinned
+# fetchurl.
 #
 # One derivation per stage, so the expensive stages are cached on their own. The pack and the MTP draft
 # layer read only the pinned downloads and the tools scripts - no ROCm, no CMake, no HIP target list -
-# so changing hipArchs rebuilds the engine alone, not the 6.5 minutes of pack work. The package is the
-# assembly: real content for the Python tree the server runs from, symlinks into the store paths the
-# other stages produce. Its closure is the whole package.
+# so changing hipArchs rebuilds the engine and the GPU picture reader, not the 6.5 minutes of pack work.
+# The package is the assembly: real content for the Python tree the server runs from, symlinks into the
+# store paths the other stages produce. Its closure is the whole package.
 #
 # This is the package definition; the flake callPackages it (flake.nix). Everything - the source pin,
 # the build, the config the server reads - lives here. The three things the caller may choose are the
@@ -38,7 +39,10 @@
 let
   rocm = rocmPackages;
 
-  version = "0.1.45";
+  # The repository tag. The engine's own version is a separate number (CMakeLists.txt's project
+  # version, 0.1.45.3 for this tag), and BUILD.json carries that one, because that is what the server
+  # reads as the engine's version.
+  version = "0.2.0-beta";
   # The target list as a list. A semicolon-separated string is accepted too, which is what the
   # NixOS module's services.strata.hipArchs passes.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
@@ -52,7 +56,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-YfCpJ+iSbs8hSGzWtTr/fNJYRjUjS+ed7U7TNiaDBJU=";
+    hash = "sha256-7yRnyn0lrl3yuoCtt0+xUeWQuuPwM2ChL7tkykAKrow=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the
@@ -70,10 +74,12 @@ let
     inherit fetchurl stdenvNoCC;
   };
 
-  # The server's non-stdlib imports (serve/ and tools/strata_tokenizer.py): jinja2 (chat templates),
-  # regex (the tokenizer), psutil (RAM telemetry), pillow (the image formats the image encoder's decoder
-  # cannot read, which the server converts to PNG before handing them over). No web framework -
-  # serve/server.py is the stdlib http.server.
+  # The server's non-stdlib imports (serve/, strata_control/ and strata_cli/, which the server imports
+  # since 0.2.0, and tools/strata_tokenizer.py): jinja2 (chat templates), regex (the tokenizer), psutil
+  # (RAM telemetry), pillow (the image formats the image encoder's decoder cannot read, which the server
+  # converts to PNG before handing them over). No web framework - serve/server.py is the stdlib
+  # http.server. rich and textual are not here: only the terminal's dashboards import them, and the
+  # server never touches those.
   python = python3.withPackages (p: [
     p.jinja2
     p.regex
@@ -92,57 +98,122 @@ let
   ]);
 
   # ---- the model: the package's payload ---------------------------------------------------------
-  # Two GGUF shards from Hugging Face, pinned to the repository's revision of 2026-10-02 (the current
-  # `sha` of the repository; tools/mtp_fetch.py pins the same kind of revision for the checkpoint).
-  #   shard 1: the model - dense tensors and the quantized experts, whose size is the `model` parameter.
-  #            The engine mmap's it (--native); the low-RAM resident mode reads its experts through
-  #            pack's experts.bin, which tools/iq_pack.py cuts from it at build time.
-  #   shard 2 (26.8 GB): the per-layer token-embedding table alone (one tensor), byte-identical in every
-  #            size so it is pinned once; it stays on disk, read by the engine as needed (--ple-gguf).
-  # The tokenizer is not a file in that repository: tools/strata_tokenizer.py derives it from shard 1's
+  # The model GGUF from Hugging Face, pinned to the repository revision setup.py's HF_REVISIONS names
+  # (the current `sha` of the repository; tools/mtp_fetch.py pins the same kind of revision for the
+  # checkpoint). Two families, and the shape of the payload differs between them:
+  #   qwen (the GSQ-RCO quants): two shards. Shard 1 is the model - dense tensors and the quantized
+  #     experts, whose size is the `model` parameter - which the engine mmap's (--native); the low-RAM
+  #     resident mode reads its experts through pack's experts.bin, which tools/iq_pack.py cuts from it
+  #     at build time. Shard 2 (26.8 GB) is the per-layer token-embedding table alone (one tensor),
+  #     byte-identical in every size so it is pinned once; it stays on disk, read as needed (--ple-gguf).
+  #   gyro (agentionai's trellis quants): one GGUF that carries the n-gram table inside it, hence the
+  #     smaller memory for a similar download. Its experts are Hadamard-folded, so its pack is marked v5
+  #     beside a hadamard.txt, which an engine that cannot rotate them refuses; the engine here is new
+  #     enough (setup.py's GYRO_ENGINE asks for 0.1.45.1). Its small projections are quantized too, so
+  #     its pack needs iq_pack.py's --compat-bf16, which is what setup.py passes for the family.
+  # The tokenizer is not a file in either repository: tools/strata_tokenizer.py derives it from shard 1's
   # GGUF metadata (vocab, merges, chat template) into pack/tokenizer/ at build time.
-  hfRev = "ed59f92082b1e93c0e96d60a8b11aab089b52f09";
-  # The sizes the repository carries: shard 1's sha256 (its LFS oid), the RAM setup.py's MODELS wants for
-  # its experts, and the download in GB. Only the selected size is fetched.
+  families = {
+    qwen = {
+      repo = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF";
+      rev = "ed59f92082b1e93c0e96d60a8b11aab089b52f09"; # 2026-09-29
+      name = "qwen3.8-flash-next";
+      shards = 2;
+    };
+    gyro = {
+      repo = "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF";
+      rev = "1ada08422e404aca51ab9df665f089f34c419c6b"; # 2026-10-13
+      name = "qwen3.8-flash-next-gyro";
+      shards = 1;
+      packArgs = [ "--compat-bf16" ];
+    };
+  };
+  # The sizes the two repositories carry: shard 1's sha256 (its LFS oid), the memory setup.py's MODELS
+  # wants for it, and the download in GB. Gyro's is VRAM and RAM together, which is why it is smaller.
+  # Only the selected size is fetched.
   models = {
     Q2_0 = {
+      family = "qwen";
       sha256 = "69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720";
       ram = "48";
       download = "66.4";
     };
     IQ2_XS = {
+      family = "qwen";
       sha256 = "92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7";
       ram = "48";
       download = "68.0";
     };
     IQ3_XXS = {
+      family = "qwen";
       sha256 = "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15";
       ram = "60";
       download = "75.8";
     };
     IQ3_S = {
+      family = "qwen";
       sha256 = "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3";
       ram = "62";
       download = "83.6";
+    };
+    Gyro-S = {
+      family = "gyro";
+      file = "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf";
+      sha256 = "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87";
+      ram = "27.6";
+      download = "58.5";
+    };
+    Gyro-M = {
+      family = "gyro";
+      file = "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf";
+      sha256 = "7aa36d15131d255179ab6c87fa9c9f81a0b541fc9e81e959d4c3e29eb20feb5f";
+      ram = "35";
+      download = "92.0";
     };
   };
   modelNames = builtins.attrNames models;
   modelEntry =
     models.${model} or (throw "model ${model} is not one of ${lib.concatStringsSep ", " modelNames}");
-  shardName = i: "Qwen3.8-Flash-Next-GSQ-RCO-${model}-0000${toString i}-of-00002.gguf";
+  fam = families.${modelEntry.family};
+  # The published names: the GSQ-RCO shards are split and carry the size, a Gyro file is named for its
+  # size alone. The GSQ-RCO shards live under a folder named for the size, the Gyro files at the root.
+  shardName =
+    i:
+    if fam.shards == 2 then
+      "Qwen3.8-Flash-Next-GSQ-RCO-${model}-0000${toString i}-of-00002.gguf"
+    else
+      modelEntry.file;
   hfShard =
     name: sha256:
     fetchurl {
-      url = "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/${hfRev}/${model}/${name}";
+      url = "https://huggingface.co/${fam.repo}/resolve/${fam.rev}/${
+        if fam.shards == 2 then "${model}/" else ""
+      }${name}";
       inherit sha256;
     };
   s1 = shardName 1;
-  s2 = shardName 2;
+  s2 = if fam.shards == 2 then shardName 2 else null;
   modelS1 = hfShard s1 modelEntry.sha256;
-  modelS2 = hfShard s2 "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113";
+  # the shard the engine reads the n-gram table from: shard 2 for the split files, the one file for Gyro
+  modelS2 =
+    if s2 == null then
+      modelS1
+    else
+      hfShard s2 "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113";
+  pleName = if s2 == null then s1 else s2;
   # the pack directory and the pack derivation's name: the size lowercased without underscores (iq2xs,
   # iq3xxs, iq3s), so each size caches its own pack
   packName = lib.replaceStrings [ "_" ] [ "" ] (lib.toLower model);
+  # extra iq_pack.py flags the family needs (Gyro's small projections are quantized, so its pack is
+  # marked v5 and its dense tensors are BF16-compatible)
+  packArgs = lib.concatStringsSep " " (fam.packArgs or [ ]);
+  # how setup.py's MODELS describes what the size needs: RAM for its experts in the split files, GPU and
+  # system RAM together for a Gyro file, which carries its own n-gram table
+  memoryNote =
+    if fam.shards == 2 then
+      "its experts want ~${modelEntry.ram} GB of RAM"
+    else
+      "its experts and n-gram table together want ~${modelEntry.ram} GB of GPU plus system RAM";
 
   # ---- the vision encoder: the model's mmproj (the vision encoder + projector, 0.9 GB) ---------------
   # The same repository and the same pinned revision as the shards: setup.py's FAMILIES entry for this
@@ -151,7 +222,7 @@ let
   # prompt's image pad tokens.
   mmprojName = "mmproj-Qwen3.8-Flash-Next-BF16.gguf";
   mmproj = fetchurl {
-    url = "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/${hfRev}/${mmprojName}";
+    url = "https://huggingface.co/${families.qwen.repo}/resolve/${families.qwen.rev}/${mmprojName}";
     sha256 = "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0";
   };
 
@@ -218,16 +289,20 @@ let
       path = s;
     }) mtpShards
   );
-  modelData = linkFarm "strata-model-${model}" [
-    {
-      name = s1;
-      path = modelS1;
-    }
-    {
-      name = s2;
-      path = modelS2;
-    }
-  ];
+  modelData = linkFarm "strata-model-${model}" (
+    [
+      {
+        name = s1;
+        path = modelS1;
+      }
+    ]
+    ++ lib.optionals (s2 != null) [
+      {
+        name = s2;
+        path = modelS2;
+      }
+    ]
+  );
   visionData = linkFarm "strata-mmproj" [
     {
       name = mmprojName;
@@ -289,8 +364,8 @@ let
   #   rocm-comgr  libamdcomgr (LLVM bitcode compilation at load time)
   #   rocm-runtime the remaining runtime libraries
   #   hip-common  the HIP headers hipcc includes
-  # rocBLAS is deliberately absent: CMakeLists.txt finds it only for the gfx103x solution table
-  # (STRATA_ROCBLAS_TUNING), and configure reports "not found" as a status, not an error.
+  # rocBLAS is deliberately absent from the engine: CMakeLists.txt finds it only for the gfx103x solution
+  # table (STRATA_ROCBLAS_TUNING), and configure reports "not found" as a status, not an error.
   rocmLibs = [
     rocm.clr
     rocm.hipblas
@@ -300,6 +375,9 @@ let
     rocm.rocm-runtime
     rocm.hip-common
   ];
+  # The GPU picture reader is the one stage that cannot do without rocBLAS: it links llama.cpp's ggml-hip,
+  # which does find_package(rocblas REQUIRED). That is 791 MB the engine itself does not need.
+  visionHipLibs = rocmLibs ++ [ rocm.rocblas ];
 
   # the engine loads libamdhip64 / hsa-runtime64 / the hipBLAS libraries at run time; stdenv patches
   # their store paths into the binaries' RPATH, so nothing ROCm lives outside this package's closure
@@ -325,21 +403,41 @@ let
     "-DCMAKE_HIP_ARCHITECTURES='${archString}'"
     # llama.cpp from the store instead of a FetchContent network fetch
     "-DSTRATA_GGML_DIR=${llamaCpp}"
+    # STRATA_MMQ_TQ_OVERLAY (ON here, as upstream) is what makes the MMQ prompt path cover the Gyro
+    # trellis types on an upstream llama.cpp: it writes an overlay of ggml-cuda headers at configure
+    # time (cmake/strata_ggml_tq_overlay.cmake). Kept at its default, and it needs nothing of ours.
   ];
 
-  # tools/vision is its own CMake project (strata-vision, the image encoder). The AMD backend has no GPU
-  # image encoder upstream - setup.py's hip_vision() answers "images off, or --vision cpu" - so this is the
-  # CPU one, the same AVX2 baseline as the engine. MTMD_VIDEO is off: the server hands the encoder still
-  # images only, so it needs no ffmpeg.
-  visionCmakeFlags = builtins.concatStringsSep " " [
+  # tools/vision is its own CMake project (strata-vision, the image encoder). MTMD_VIDEO is off: the
+  # server hands the encoder still images only, so it needs no ffmpeg. Both readers are built:
+  #   strata-vision       the CPU one, the same AVX2 baseline as the engine, always the fallback
+  #   strata-vision-hip   the GPU one, which is what setup.py chooses for a card of 24 GB or more
+  #                       (hip_vision() in 0.2.0), and it is a separate program so that a PC where the
+  #                       HIP runtime will not load still has the CPU reader to fall back on.
+  # The CPU build stays non-HIP: the two are different programs by CMake's own rule (STRATA_VISION_CUDA
+  # and STRATA_VISION_HIP refuse each other), and the target list reaches the GPU one alone.
+  visionFlags = [
     "-DCMAKE_BUILD_TYPE=Release"
     "-DLLAMA_DIR=${llamaCpp}"
     "-DSTRATA_VISION_CUDA=OFF"
     "-DSTRATA_PORTABLE=ON"
     "-DMTMD_VIDEO=OFF"
   ];
+  visionCmakeFlags = builtins.concatStringsSep " " visionFlags;
+  # the HIP reader: ggml-hip at the pinned commit, for the same target list as the engine. STRATA_PORTABLE
+  # (already in the flags above) keeps the CPU side at the AVX2 baseline, which upstream's own HIP build
+  # does not set but this package always wants.
+  visionHipCmakeFlags = builtins.concatStringsSep " " (
+    visionFlags
+    ++ [
+      "-DSTRATA_VISION_HIP=ON"
+      "-DSTRATA_VISION_HIP_ARCHS='${archString}'"
+      "-DCMAKE_PREFIX_PATH=${lib.makeSearchPath ":" visionHipLibs}"
+      "-DCMAKE_HIP_COMPILER=${rocm.clr}/bin/amdclang++"
+    ]
+  );
 
-  # ---- the engine: the only stage the HIP target list reaches ------------------------------------
+  # ---- the engine: what the HIP target list reaches, together with the GPU picture reader ---------
   engine = stdenv.mkDerivation {
     pname = "strata-engine";
     inherit version src;
@@ -382,6 +480,31 @@ let
     '';
   };
 
+  # The GPU picture reader. Its CMake project forces RUNPATH "$ORIGIN" for a relocatable folder, which
+  # stdenv's RPATH patching replaces with the store paths of what it links; propagatedBuildInputs is what
+  # puts ROCm in that set, exactly as for the engine.
+  visionHipBin = stdenv.mkDerivation {
+    pname = "strata-vision-hip";
+    inherit version src;
+    nativeBuildInputs = [
+      cmake
+      ninja
+    ];
+    configurePhase = "true";
+    buildPhase = ''
+      cmake -S tools/vision -B build-vision -G Ninja ${visionHipCmakeFlags}
+      # the target is still named strata-vision; only its OUTPUT_NAME becomes strata-vision-hip
+      ninja -C build-vision strata-vision
+    '';
+    installPhase = ''
+      mkdir -p $out/bin
+      install -m 755 build-vision/bin/strata-vision-hip $out/bin/strata-vision-hip
+    '';
+    # llama.cpp's ggml-hip, which this project compiles, does `find_package(rocblas REQUIRED)` and links
+    # roc::rocblas, so the GPU reader needs rocBLAS (791 MB) where the engine does not.
+    propagatedBuildInputs = visionHipLibs;
+  };
+
   # ---- the pack: the pinned shards and the tools scripts, nothing else, one derivation per size. The
   # tools run from the read-only store path, so they must not leave a __pycache__ there.
   pack =
@@ -398,7 +521,7 @@ let
         # into tokenizer/), and writes index.txt / dense.bin / native_experts.txt / experts.bin (the quantized
         # experts the low-RAM resident mode reads at run time: 35.5 GB at IQ2_XS, 42.9 at IQ3_XXS, 50.3 at IQ3_S).
         ${toolsPython}/bin/python3 ${src}/tools/iq_pack.py \
-          --gguf ${modelData}/${s1} --out $out --experts-bin
+          --gguf ${modelData}/${s1} --out $out --experts-bin ${packArgs}
       '';
 
   # ---- the MTP draft layer: the pinned checkpoint shards and the tools scripts, nothing else
@@ -438,6 +561,11 @@ runCommand "strata-${model}-${version}"
     # tree it runs from is real content here; only the payloads are links into their own store paths.
     mkdir -p $out/bin $out/etc/strata $out/models $out/pack $out/mtp $out/data
     cp -a ${src}/serve ${src}/tools ${src}/chat.py ${src}/requirements.txt $out/
+    # serve/server.py and serve/lifeline.py import these two packages (engine_component, vision_reader,
+    # procs, presets, offline), so they are part of the tree the server runs from. Only its terminal
+    # dashboards (strata_cli/dashboard.py and friends) want rich/textual, and the server never imports
+    # those, so the Python environment stays the four packages above.
+    cp -a ${src}/strata_control ${src}/strata_cli $out/
     ln -s ${modelData} $out/models/${model}
     ln -s ${visionData} $out/vision
     ln -s ${pack} $out/pack/${packName}
@@ -446,19 +574,23 @@ runCommand "strata-${model}-${version}"
     ln -s ${engine}/bin/strata $out/bin/strata
     ln -s ${engine}/bin/strata-device $out/bin/strata-device
     ln -s ${visionBin}/bin/strata-vision $out/bin/strata-vision
+    ln -s ${visionHipBin}/bin/strata-vision-hip $out/bin/strata-vision-hip
 
     # the config shape setup.py writes (exe, args, cwd, tokenizer, model_name), filled for this
-    # machine: the low-RAM resident mode - the experts the GPU does not hold live in RAM, the 26.8 GB PLE
+    # machine: the low-RAM resident mode - the experts the GPU does not hold live in RAM, the PLE n-gram
     # table stays on disk, and the KV cache is int8 at the full 131072-token context. The size here is
-    # ${model}: its experts want ~${modelEntry.ram} GB (setup.py's MODELS), so this is the
-    # config for a PC with that much RAM plus a 32 GB card.
+    # ${model}: ${memoryNote} (setup.py's MODELS), so this is the config for a PC with that much memory
+    # plus a 32 GB card.
     # Images need both halves, as setup.py writes them: the "vision" section makes the server spawn the
     # encoder (chat.py's /image, OpenAI image_url parts, Anthropic image blocks), and "--vision" in args is
     # what makes the engine accept the GENI requests it sends - without the flag the engine answers "this
-    # engine was started without --vision". It is the image encoder on the CPU, since the AMD backend has no
-    # GPU one upstream.
+    # engine was started without --vision". Since 0.2.0 the AMD backend has a GPU encoder of its own, and
+    # that is what this config names: setup.py's hip_vision() picks it for a card of 24 GB or more, and
+    # "cpu_exe" is the fallback it writes beside it, which the server takes over when the GPU reader cannot
+    # start or the card is smaller than the reader's target list (serve/vision_reader.py).
     # "model" is the text model the encoder opens vocab-only for the image positions: shard 1, with shard 2
-    # beside it under its original name, which is how llama.cpp resolves a split GGUF. No "threads": the
+    # beside it under its original name, which is how llama.cpp resolves a split GGUF (one file for Gyro).
+    # No "threads": the
     # encoder takes half the cores, what setup.py writes for a CPU encoder, and this package cannot know the
     # target PC's core count. JSON, so no comments here.
     cat > $out/etc/strata/strata.json <<'EOF'
@@ -467,7 +599,7 @@ runCommand "strata-${model}-${version}"
       "args": [
         "--pack", "@OUT@/pack/@PACK@",
         "--native", "@OUT@/models/@MODEL@/@S1@",
-        "--ple-gguf", "@OUT@/models/@MODEL@/@S2@",
+        "--ple-gguf", "@OUT@/models/@MODEL@/@PLE@",
         "--expert-profile", "@OUT@/data/expert-profile.bin",
         "--expert-cache", "auto",
         "--prefill", "auto",
@@ -481,30 +613,40 @@ runCommand "strata-${model}-${version}"
       ],
       "cwd": "@OUT@",
       "tokenizer": "@OUT@/pack/@PACK@/tokenizer",
-      "model_name": "qwen3.8-flash-next-@MODEL_LOWER@",
+      "model_name": "@FAM_NAME@-@MODEL_LOWER@",
       "backend": "hip",
       "env": { "STRATA_RESIDENT_PIN": "0" },
       "vision": {
-        "exe": "@OUT@/bin/strata-vision",
+        "exe": "@OUT@/bin/strata-vision-hip",
+        "cpu_exe": "@OUT@/bin/strata-vision",
         "mmproj": "@OUT@/vision/@MMPROJ@",
         "model": "@OUT@/models/@MODEL@/@S1@",
-        "gpu": false,
-        "max_tokens": 300
+        "gpu": true,
+        "max_tokens": 1024
       }
     }
     EOF
-    sed -i -e "s|@OUT@|$out|" -e "s|@MODEL@|${model}|" -e "s|@PACK@|${packName}|" -e "s|@MODEL_LOWER@|${lib.toLower model}|" -e "s|@S1@|${s1}|" -e "s|@S2@|${s2}|" -e "s|@MMPROJ@|${mmprojName}|" $out/etc/strata/strata.json
-    # the metadata setup.py's installer records and the server reads from beside the engine
+    sed -i -e "s|@OUT@|$out|" -e "s|@MODEL@|${model}|" -e "s|@PACK@|${packName}|" -e "s|@MODEL_LOWER@|${lib.toLower model}|" -e "s|@FAM_NAME@|${fam.name}|" -e "s|@S1@|${s1}|" -e "s|@PLE@|${pleName}|" -e "s|@MMPROJ@|${mmprojName}|" $out/etc/strata/strata.json
+    # the metadata setup.py's installer records and the server reads from beside the engine. "version" is
+    # the engine's own number, read out of the source it was built from rather than the package's version,
+    # because the two move apart: this release is tagged v0.2.0-beta and its engine is 0.1.45.3. The vision
+    # keys are what setup.py writes for a HIP engine with a GPU reader, and the server uses vision_archs to
+    # decide whether the GPU reader covers the card it found (strata_control/vision_reader.py).
+    engineVersion=$(sed -n 's/^[[:space:]]*project(strata VERSION \([0-9.]*\).*/\1/p' ${src}/CMakeLists.txt | head -1)
     cat > $out/bin/BUILD.json <<'EOF'
     {
-      "version": "${version}",
+      "version": "@ENGINE_VERSION@",
       "backend": "hip",
       "archs": [${lib.concatStringsSep ", " (map (a: "\"${a}\"") archList)}],
       "model": "${model}",
-      "vision": "cpu",
+      "vision": "gpu",
+      "vision_archs": [${lib.concatStringsSep ", " (map (a: "\"${a}\"") archList)}],
+      "vision_gpu": "strata-vision-hip",
+      "vision_cpu": "strata-vision",
       "prefill_mmq": ${lib.boolToString prefillMmq}
     }
     EOF
+    sed -i "s|@ENGINE_VERSION@|$engineVersion|" $out/bin/BUILD.json
     # strata-server: the Python server over the stored engine
     cat > $out/bin/strata-server <<'EOF'
     #!/bin/sh

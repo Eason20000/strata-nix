@@ -30,6 +30,18 @@ let
   # setup.py's answer there is yarn with the factor the final context over the trained one.
   trainedContext = 262144;
 
+  # The engine's performance switches as typed options instead of raw env. They are engine environment
+  # variables, so they reach the config the same way the package's own STRATA_RESIDENT_PIN does; the raw
+  # services.strata.env is applied after them, so setting the same variable there wins. The engine reads
+  # them as numbers and treats an unset variable as "the default for this architecture", which is why a
+  # null option leaves the key out rather than writing an empty value.
+  perfEnv =
+    (lib.optionalAttrs (cfg.hipWmma != null) { STRATA_HIP_WMMA = if cfg.hipWmma then "1" else "0"; })
+    // (lib.optionalAttrs (cfg.coldOverlap != null) { STRATA_COLD_OVERLAP = toString cfg.coldOverlap; })
+    // (lib.optionalAttrs (cfg.ioPrefetch != null) {
+      STRATA_IO_PREFETCH = if cfg.ioPrefetch then "1" else "0";
+    });
+
   # The config is written at build time, from the package's own file: the package is an input of this
   # derivation, so the store paths inside the config are real dependencies rather than text. (A
   # string read from the store at eval time carries no context and cannot be written back out.)
@@ -42,7 +54,7 @@ let
         ${pkgs.jq}/bin/jq -n \
           --slurpfile base ${cfg.package}/etc/strata/strata.json \
           --arg cwd "${cfg.stateDir}" \
-          --argjson env '${builtins.toJSON cfg.env}' \
+          --argjson env '${builtins.toJSON (perfEnv // cfg.env)}' \
           --argjson extra '${builtins.toJSON cfg.extraConfig}' \
           --argjson args '${builtins.toJSON cfg.engineArgs}' \
           --argjson model '${builtins.toJSON cfg.modelName}' \
@@ -131,12 +143,14 @@ in
     model = lib.mkOption {
       type = types.str;
       default = "IQ2_XS";
-      example = "IQ3_S";
+      example = "Gyro-S";
       description = "The model size the default package is built with, one of the sizes the pinned
-        repository carries (IQ2_XS, IQ3_XXS, IQ3_S, Q2_0). Only used to build the default package, so
-        override services.strata.package instead when you want a package that is already built. The size
-        decides which pins the package carries and which pack it runs, and its experts want RAM (setup.py:
-        IQ2_XS 48 GB, IQ3_XXS 60, IQ3_S 62), so the machine must have that much.";
+        repositories carry (the GSQ-RCO quants IQ2_XS, IQ3_XXS, IQ3_S, Q2_0; the Gyro trellis quants
+        Gyro-S and Gyro-M). Only used to build the default package, so override services.strata.package
+        instead when you want a package that is already built. The size decides which pins the package
+        carries and which pack it runs, and its experts want memory (setup.py's MODELS: IQ2_XS 48 GB of
+        RAM, IQ3_XXS 60, IQ3_S 62, Gyro-S 27.6 and Gyro-M 35 of VRAM and RAM together), so the machine
+        must have that much.";
     };
 
     prefillMmq = lib.mkOption {
@@ -153,6 +167,44 @@ in
       type = types.port;
       default = 8080;
       description = "The port the API listens on.";
+    };
+
+    hipWmma = lib.mkOption {
+      type = types.nullOr types.bool;
+      default = null;
+      example = false;
+      description = "Whether the prompt path's attention runs on the GPU's matrix cores (the engine's
+        STRATA_HIP_WMMA). Null: the engine's choice for the card, which is on for RDNA4 (gfx1200/gfx1201)
+        and off for RDNA3 (gfx1100/gfx1101/gfx1151). True forces it on, which is what a gfx11 card needs
+        to get it at all; the kernel is the same one either way, and the engine says once in its log which
+        it used. It changes the text slightly (the matrix cores accumulate differently), which is why the
+        engine leaves it off for the older cards. For the per-prompt choice, set STRATA_HIP_WMMA=auto in
+        services.strata.env instead.";
+    };
+
+    coldOverlap = lib.mkOption {
+      type = types.nullOr types.unsigned;
+      default = null;
+      example = 0;
+      description = "How many layers' experts the engine computes straight out of the page cache instead
+        of copying them first (the engine's STRATA_COLD_OVERLAP): 4 is its default, 0 turns it off. Null:
+        the engine's default. It only applies when the experts are read in place from the model file, so
+        with this package's config - the resident mode, whose experts come from pack/experts.bin - it
+        changes nothing until services.strata.engineArgs replaces --resident-experts with
+        --mmap-experts.";
+    };
+
+    ioPrefetch = lib.mkOption {
+      type = types.nullOr types.bool;
+      default = null;
+      example = false;
+      description = "Whether the engine reads the experts it will need next on separate I/O threads while
+        the current layer computes (the engine's STRATA_IO_PREFETCH). Null: the engine's default, which is
+        on for a model read in place from the file on Linux and off for a pack's experts.bin. Like
+        services.strata.coldOverlap it is about the file, so with this package's resident-experts config
+        it changes nothing until services.strata.engineArgs replaces --resident-experts with
+        --mmap-experts; upstream also turns it off on an AMD laptop APU whose driver resets with it and
+        the adaptive expert tier.";
     };
 
     host = lib.mkOption {
@@ -231,7 +283,8 @@ in
       example = {
         STRATA_RESIDENT_PIN = "1";
       };
-      description = "Engine environment, added to what the package's config carries.";
+      description = "Engine environment, added to what the package's config carries. Applied after the
+        typed switches above, so a variable set here wins over them.";
     };
 
     extraConfig = lib.mkOption {
@@ -246,7 +299,10 @@ in
       description = "Anything else the server's config accepts (sampling, aliases, mcp_servers,
         cors_origins, allowed_hosts, engine_silence_s, ...), merged into the generated config. The
         package's config has a `vision` entry for the image encoder, so setting it to null here turns
-        image support off for this machine.";
+        image support off for this machine. Its `exe` is the GPU reader and `cpu_exe` the fallback: the
+        server switches to the CPU reader by itself when the GPU one does not start, so a smaller card
+        needs nothing here - to ask for the CPU reader outright, set vision to the package's section with
+        exe pointing at bin/strata-vision and gpu false.";
     };
 
     extraArgs = lib.mkOption {

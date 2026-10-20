@@ -9,20 +9,28 @@ is hash-pinned, so the build is reproducible and needs no network at configure t
 - Linux, `x86_64`, Nix with flakes enabled
 - An AMD GPU whose HIP architecture is in the target list (default `gfx1100`, `gfx1151`, `gfx1201`)
 - Disk for the model, checkpoint shards and mmproj: ~124 GB of downloads for IQ2_XS, ~132 GB for
-  IQ3_XXS, ~140 GB for IQ3_S
-- RAM for the model's experts: 48 GB at IQ2_XS, 60 GB at IQ3_XXS, 62 GB at IQ3_S
+  IQ3_XXS, ~140 GB for IQ3_S, ~114 GB for Gyro-S, ~148 GB for Gyro-M
+- Memory for the model: 48 GB of RAM at IQ2_XS, 60 GB at IQ3_XXS, 62 GB at IQ3_S; 27.6 GB of GPU plus
+  system RAM together at Gyro-S, 35 GB at Gyro-M
 
 ## Models
 
-`model` is a `callPackage` parameter, default `IQ2_XS`; the flake also exposes the IQ3 sizes as their own
-outputs (`nix build .#strata-iq3-s`).
+`model` is a `callPackage` parameter, default `IQ2_XS`; the flake also exposes each other size as its own
+output (`nix build .#strata-iq3-s`, `.#strata-gyro-s`).
 
-| `model` | download | RAM for its experts | notes |
+| `model` | download | memory | notes |
 | --- | --- | --- | --- |
-| `Q2_0` | 66.4 GB | 48 GB | 2-bit, the fastest |
-| `IQ2_XS` | 68.0 GB | 48 GB | 2-bit i-quant, a little better quality, close in speed |
-| `IQ3_XXS` | 75.8 GB | 60 GB | 3-bit i-quant, better quality, slower |
-| `IQ3_S` | 83.6 GB | 62 GB | 3.5-bit, the best quality, the slowest; wants a 64 GB PC |
+| `Q2_0` | 66.4 GB | 48 GB RAM | 2-bit, the fastest |
+| `IQ2_XS` | 68.0 GB | 48 GB RAM | 2-bit i-quant, a little better quality, close in speed |
+| `IQ3_XXS` | 75.8 GB | 60 GB RAM | 3-bit i-quant, better quality, slower |
+| `IQ3_S` | 83.6 GB | 62 GB RAM | 3.5-bit, the best quality, the slowest; wants a 64 GB PC |
+| `Gyro-S` | 58.5 GB | 27.6 GB GPU+RAM | trellis TQ1_0, the smallest; lower quality than the 2-bit sizes |
+| `Gyro-M` | 92.0 GB | 35 GB GPU+RAM | trellis TQ2_0, about IQ3_XXS quality in ~20% less memory |
+
+The Gyro files are agentionai's quantizations rather than ISTA's GSQ-RCO ones: one GGUF that carries the
+n-gram table inside it, which is why a bigger download costs less memory. Its pack is marked v5 with a
+`hadamard.txt` beside it (the experts are Hadamard-folded), which the engine this package builds rotates
+natively.
 
 ## Build
 
@@ -66,9 +74,17 @@ card is not found.
 ## Images
 
 The package's config carries a `vision` entry and `--vision` in the engine's args, so the server encodes
-pictures (OpenAI `image_url` parts, Anthropic image blocks, `chat.py`'s `/image <path>`) through the
-package's `bin/strata-vision`. For the AMD backend the encoder runs on **CPU** — upstream has no GPU image
-encoder for HIP. Turn images off by making `vision` null in the config the server reads.
+pictures (OpenAI `image_url` parts, Anthropic image blocks, `chat.py`'s `/image <path>`). Since v0.2.0 the
+AMD backend has a GPU encoder of its own, and the package builds both: `bin/strata-vision-hip` (llama.cpp's
+HIP backend, compiled for the same `hipArchs`) is what the config names, and `bin/strata-vision` (CPU) is
+its `cpu_exe`. The server switches to the CPU reader by itself when the GPU one cannot start — no HIP
+runtime, a card outside the target list, a busy card — so nothing has to be chosen per machine. The GPU
+reader keeps about 1.4 GB of VRAM that the experts would otherwise use, which is why upstream prefers the
+CPU reader under 24 GB; to ask for it outright, set `services.strata.extraConfig.vision` to the package's
+section with `exe` at `bin/strata-vision` and `gpu` false. Turn images off by making `vision` null.
+
+The GPU reader links rocBLAS (791 MB), which the engine itself does not need — that is the only cost of
+shipping it.
 
 ## As a NixOS service
 
@@ -98,3 +114,10 @@ directory is `/var/lib/strata`, the only writable place. `services.strata.packag
 instead, such as `packages.strata-iq3-s`, and `services.strata.maxContext` sets the context window (the
 package's 131072 by default) — past the model's trained 262144 it adds yarn rope scaling, as `setup.py`
 does.
+
+Three of the engine's v0.2.0 performance switches are typed options, and they write engine environment
+variables into the generated config: `services.strata.hipWmma` (matrix-core attention on the prompt path —
+`true` is what a gfx11 card needs to get it at all), `services.strata.coldOverlap` and
+`services.strata.ioPrefetch` (both about reading the model file in place, so they only bite once the engine
+args switch from `--resident-experts` to `--mmap-experts`). Anything else the engine reads from the
+environment goes in `services.strata.env`, which is applied after them.

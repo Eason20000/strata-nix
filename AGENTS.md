@@ -39,7 +39,7 @@ README.md                          # build/run/service usage, and the layout tab
 ```
 
 The package is one output whose closure is the whole package — engine, Python server, model,
-tokenizer, MTP draft layer, image encoder, ROCm runtime. It is the assembly: real content for the
+tokenizer, MTP draft layer, image encoders, ROCm runtime. It is the assembly: real content for the
 Python tree the server runs from, symlinks into the store paths the stage derivations produce. With
 this output layout:
 
@@ -47,15 +47,17 @@ this output layout:
 bin/strata            the engine (HIP)
 bin/strata-device     the device probe (--list-devices)
 bin/strata-server     the Python server wrapper
-bin/strata-vision     the image encoder (llama.cpp's mtmd), on the CPU
-bin/BUILD.json        the version, backend, arch list, model size and vision backend actually compiled
+bin/strata-vision     the image encoder (llama.cpp's mtmd), on the CPU: the fallback reader
+bin/strata-vision-hip the same encoder on the AMD GPU (ggml-hip), the reader the config names
+bin/BUILD.json        the engine version, backend, arch list, model size and picture readers actually compiled
 etc/strata/strata.json  the config the server reads
 pack/<size>           the packed model and the tokenizer derived from its GGUF metadata (symlink)
-models/<size>         the two pinned GGUF shards (symlink)
+models/<size>         the pinned GGUF file(s) (symlink): two shards, or one Gyro file
 vision/               the pinned mmproj the image encoder reads (symlink)
 mtp/rt                the packed MTP draft layer (symlink)
 data/expert-profile.bin
-serve/ tools/ chat.py requirements.txt   the upstream Python tree, run from the store (real copies)
+serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
+                      the upstream Python tree, run from the store (real copies)
 ```
 
 ## Key Invariants
@@ -64,6 +66,11 @@ serve/ tools/ chat.py requirements.txt   the upstream Python tree, run from the 
   `fetchFromGitHub`, pinned to the tag matching `version`. A flake input named
   `strata` once shadowed the derivation built from it inside its own definition
   and recursed; do not reintroduce one.
+- The tag and the engine's version are different numbers: v0.2.0-beta builds engine 0.1.45.3, and
+  `bin/BUILD.json` carries the engine's, which the assembly reads out of `CMakeLists.txt`'s
+  `project(strata VERSION ...)` rather than hardcoding it. The server reads that file as the engine's
+  version, and `setup.py` compares it against per-model minimums (`GYRO_ENGINE` and friends), so a
+  hardcoded package version there would be wrong.
 - Payloads enter the build as `linkFarm` directories, never as bare files in
   `buildInputs`: stdenv `source`s every bare file there as a setup hook.
 - `configurePhase = "true"` is deliberate. stdenv's default configure would run
@@ -74,7 +81,10 @@ serve/ tools/ chat.py requirements.txt   the upstream Python tree, run from the 
   with `propagatedBuildInputs = rocmLibs`, which is what patches the RPATH; a `runCommand` would not.
 - The assembly keeps `serve/` and `tools/` as real copies: `serve/server.py` takes
   `Path(__file__).resolve().parents[1]` as its root, so a symlinked `serve/` would point it at the wrong
-  store path. Only the payloads are links, and the closure still contains them.
+  store path. Only the payloads are links, and the closure still contains them. Since 0.2.0 the server
+  also imports `strata_control/` (`vision_reader`, `procs`, `engine_component`, `offline`) and, through
+  it, `strata_cli/`, so both are copied too; only the terminal's dashboards want `rich`/`textual`, which
+  the server never imports, so the Python environment stays the four packages.
 - Store paths inside generated files must be real dependencies, not text. The
   package substitutes `@OUT@`/`@PY@` with `sed`; the service module builds its
   config with `runCommand` (a string read from the store at eval time carries no
@@ -84,13 +94,18 @@ serve/ tools/ chat.py requirements.txt   the upstream Python tree, run from the 
 - Images need both halves of the config, as `setup.py` writes them: the `vision` section makes the server
   spawn the encoder, and `--vision` in `args` is what makes the engine accept the `GENI` requests it sends.
   The server passes the config's `args` unchanged, so the flag belongs in the package's file.
-- The image encoder is CPU-only for this backend: upstream has no GPU vision
-  encoder for HIP (`setup.py`'s `hip_vision()` answers "images off, or
-  `--vision cpu`"). It is a second CMake project, `tools/vision`, built against
-  the llama.cpp store path with `-DLLAMA_DIR=` and `MTMD_VIDEO=OFF` (the server
-  sends still images only, so it needs no ffmpeg). Its `model` is shard 1 with
-  shard 2 beside it under the original names, which is how llama.cpp resolves a
-  split GGUF.
+- Since v0.2.0 the AMD backend has two picture readers, and the package ships both: `tools/vision` built
+  plain (`bin/strata-vision`, CPU) and built with `-DSTRATA_VISION_HIP=ON
+  -DSTRATA_VISION_HIP_ARCHS="<the same target list>"` (`bin/strata-vision-hip`). The config names the GPU
+  one as `exe` with the CPU one as `cpu_exe`, which is what `setup.py` writes for a card of 24 GB or more;
+  `serve/vision_reader.py` falls back to the CPU reader when the GPU one cannot start, and `BUILD.json`'s
+  `vision_archs` is how it knows the card is not covered. Both are the second CMake project, built against
+  the llama.cpp store path with `-DLLAMA_DIR=` and `MTMD_VIDEO=OFF` (the server sends still images only,
+  so it needs no ffmpeg). Its `model` is shard 1 with shard 2 beside it under the original names, which is
+  how llama.cpp resolves a split GGUF.
+- The GPU reader's stage is the one stage that needs `rocm.rocblas`: llama.cpp's `ggml-hip` does
+  `find_package(rocblas REQUIRED)` and links it (791 MB in the closure). The engine stage still omits it —
+  its CMakeLists finds it only for the gfx103x solution table and treats "not found" as a status.
 - nixpkgs has no single `/opt/rocm` prefix: each ROCm package is its own store
   path, found through `CMAKE_PREFIX_PATH`, and the HIP compiler is
   `rocm.clr/bin/amdclang++`.
@@ -103,12 +118,21 @@ serve/ tools/ chat.py requirements.txt   the upstream Python tree, run from the 
   it requires HIP, which this package always enables). It reaches the engine stage alone, so flipping it
   rebuilds the engine and the assembly, not the pack, the encoder or the draft layer, and it is recorded in
   `bin/BUILD.json` as `prefill_mmq`.
-- `model` selects the size: the shard 1 pin and the pack, so each size has its own pack derivation
+- `model` selects the size: the model pin and the pack, so each size has its own pack derivation
   (`strata-pack-<size>`) and its own `pack/<size>` output — one name for all sizes would let the caches
-  collide. Shard 2 is byte-identical in every size (the PLE table alone), so it is pinned once. The size
-  reaches the pins and the pack only, so switching sizes keeps the engine, the encoder and the draft layer
-  cached. `IQ2_XS` is the default; the IQ3 sizes want more RAM for their experts (60 and 62 GB in
-  `setup.py`'s `MODELS`, against IQ2_XS's 48), which is what the generated config's comment states.
+  collide. Shard 2 is byte-identical in every GSQ-RCO size (the PLE table alone), so it is pinned once.
+  The size reaches the pins and the pack only, so switching sizes keeps the engine, both encoders and the
+  draft layer cached. `IQ2_XS` is the default; the IQ3 sizes want more RAM for their experts (60 and 62 GB
+  in `setup.py`'s `MODELS`, against IQ2_XS's 48), which is what the generated config's comment states.
+- The `families` table carries what differs between the two model lines, mirroring `setup.py`'s
+  `FAMILIES`/`MODELS`: the repository and its pinned revision, the published file names, the shard count,
+  the `model_name` prefix, and any extra `iq_pack.py` flag. Gyro (agentionai's trellis TQ quants) is one
+  GGUF that holds the n-gram table, so `--ple-gguf` points at the same file as `--native`, its pack needs
+  `--compat-bf16`, and its `experts.bin` is marked v5 with a `hadamard.txt` beside it (Hadamard-folded
+  experts an older engine would read as noise). Its mmproj is the GSQ-RCO one, pinned once for both
+  families. The trellis MMQ prompt kernels come from `cmake/strata_ggml_tq_overlay.cmake`, which writes an
+  overlay of the pinned llama.cpp's ggml-cuda headers at configure time; `STRATA_MMQ_TQ_OVERLAY` is ON
+  upstream and this package leaves it at its default.
 - `llama.cpp.nix` is `import`ed directly. That is fine here, but a nixpkgs
   `by-name` package may only use its function arguments, so it would have to
   become its own `by-name` entry to be upstreamed.
@@ -139,7 +163,8 @@ rebuild.
 # another card: hipArchs is a callPackage parameter of the package
 nix build --impure --expr '(import <nixpkgs> { system = "x86_64-linux"; }).callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; }'
 
-# another model size: model is the other callPackage parameter (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S)
+# another model size: model is the other callPackage parameter (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S,
+# Gyro-S, Gyro-M)
 nix build .#strata-iq3-s
 
 # re-pin a hash after changing a pin
