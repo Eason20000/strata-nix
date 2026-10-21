@@ -40,11 +40,11 @@ let
   rocm = rocmPackages;
 
   # The repository tag. The engine's own version is a separate number (CMakeLists.txt's project
-  # version, 0.1.46 for this tag), and BUILD.json carries that one, because that is what the server
+  # version, 0.1.46.3 for this tag), and BUILD.json carries that one, because that is what the server
   # reads as the engine's version.
-  version = "0.2.1";
-  # The target list as a list. A semicolon-separated string is accepted too, which is what the
-  # NixOS module's services.strata.hipArchs passes.
+  version = "0.2.1.4";
+  # The target list as a list. A semicolon-separated string is accepted too, which is the form CMake
+  # and the source's own scripts take; services.strata.hipArchs passes a list.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
   # CMake takes the list as one argument with the ";" separator
   archString = lib.concatStringsSep ";" archList;
@@ -56,7 +56,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-B0L3tqB+yVi2hkbfTVey4NwaYMH/w+ioG71q77ueqKI=";
+    hash = "sha256-lLfTVwKrgJ+2/tH29G6XwR2MwMbOxS7UBgOIthZI7PU=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the
@@ -77,14 +77,16 @@ let
   # The server's non-stdlib imports (serve/, strata_control/ and strata_cli/, which the server imports
   # since 0.2.0, and tools/strata_tokenizer.py): jinja2 (chat templates), regex (the tokenizer), psutil
   # (RAM telemetry), pillow (the image formats the image encoder's decoder cannot read, which the server
-  # converts to PNG before handing them over). No web framework - serve/server.py is the stdlib
-  # http.server. rich and textual are not here: only the terminal's dashboards import them, and the
-  # server never touches those.
+  # converts to PNG before handing them over), jsonschema (serve/structured.py validates a request's
+  # response_format json_schema against it, and without it the server says so and only checks that the
+  # answer is one JSON object). No web framework - serve/server.py is the stdlib http.server. rich and
+  # textual are not here: only the terminal's dashboards import them, and the server never touches those.
   python = python3.withPackages (p: [
     p.jinja2
     p.regex
     p.psutil
     p.pillow
+    p.jsonschema
   ]);
 
   # Python for the build-time tools (tools/iq_pack.py, tools/strata_tokenizer.py, tools/mtp_pack.py,
@@ -571,7 +573,7 @@ runCommand "strata-${model}-${version}"
     # serve/server.py and serve/lifeline.py import these two packages (engine_component, vision_reader,
     # procs, presets, offline), so they are part of the tree the server runs from. Only its terminal
     # dashboards (strata_cli/dashboard.py and friends) want rich/textual, and the server never imports
-    # those, so the Python environment stays the four packages above.
+    # those, so the Python environment stays the five packages above.
     cp -a ${src}/strata_control ${src}/strata_cli $out/
     ln -s ${modelData} $out/models/${model}
     ln -s ${visionData} $out/vision

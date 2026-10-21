@@ -283,14 +283,17 @@ in
     engineArgs = lib.mkOption {
       type = types.nullOr (types.listOf types.str);
       default = null;
-      example = [
-        "--pack"
-        "/var/lib/strata/pack"
-        "--resident-experts"
-        "--max-context"
-        "32768"
-      ];
-      description = "The engine's arguments. Null: the package's own, unchanged.";
+      example = lib.literalExpression ''
+        # the package's own args, with the resident mode swapped for the GGUF-in-place file tier:
+        # engineArgs replaces the whole list, so start from the package's and change what you want
+        (lib.remove "--resident-experts" (builtins.fromJSON (builtins.readFile "''${cfg.package}/etc/strata/strata.json").args))
+        ++ [ "--mmap-experts" ]
+      '';
+      description = "The engine's arguments, replacing the package's list entirely: write out every flag the run
+        needs, not only the ones you change (its --pack, --native and --ple-gguf point into the store, so read them
+        out of the package's etc/strata/strata.json rather than retyping them). services.strata.maxContext is the
+        cheaper way to move one flag: it rewrites --max-context inside the package's own list. Null: the package's
+        own, unchanged.";
     };
 
     modelName = lib.mkOption {

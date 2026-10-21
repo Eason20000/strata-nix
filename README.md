@@ -43,7 +43,9 @@ The caller-visible knobs are `callPackage` parameters of
 `pkgs/by-name/st/strata/package.nix`:
 
 ```sh
-nix build --impure --expr '(import <nixpkgs> { system = "x86_64-linux"; }).callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = "IQ3_S"; prefillMmq = false; }'
+# the flake's locked nixpkgs, not <nixpkgs>: another nixpkgs means another ROCm and hipBLASLt, and a
+# tuning table is valid for one hipBLASLt version only
+nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = import f.inputs.nixpkgs { system = "x86_64-linux"; }; in pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = "IQ3_S"; prefillMmq = false; }'
 ```
 
 - `hipArchs` (default `[ "gfx1100" "gfx1151" "gfx1201" ]`) — the HIP target list, validated by the

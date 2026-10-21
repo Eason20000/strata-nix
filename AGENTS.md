@@ -68,7 +68,7 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `fetchFromGitHub`, pinned to the tag matching `version`. A flake input named
   `strata` once shadowed the derivation built from it inside its own definition
   and recursed; do not reintroduce one.
-- The tag and the engine's version are different numbers: v0.2.1 builds engine 0.1.46, and
+- The tag and the engine's version are different numbers: v0.2.1.4 builds engine 0.1.46.3, and
   `bin/BUILD.json` carries the engine's, which the assembly reads out of `CMakeLists.txt`'s
   `project(strata VERSION ...)` rather than hardcoding it. The server reads that file as the engine's
   version, and `setup.py` compares it against per-model minimums (`GYRO_ENGINE` and friends), so a
@@ -86,7 +86,8 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   store path. Only the payloads are links, and the closure still contains them. Since 0.2.0 the server
   also imports `strata_control/` (`vision_reader`, `procs`, `engine_component`, `offline`) and, through
   it, `strata_cli/`, so both are copied too; only the terminal's dashboards want `rich`/`textual`, which
-  the server never imports, so the Python environment stays the four packages.
+  the server never imports, so the Python environment stays five packages (jinja2, regex, psutil, pillow,
+  and jsonschema, which `serve/structured.py` needs to actually validate a request's `response_format`).
 - Store paths inside generated files must be real dependencies, not text. The
   package substitutes `@OUT@`/`@PY@` with `sed`; the service module builds its
   config with `runCommand` (a string read from the store at eval time carries no
@@ -171,12 +172,14 @@ Plain `nix flake check` builds the package, so use `--no-build` for the quick
 check.
 
 A change to the build recipe re-runs the pack/extract steps over ~67 GB of model
-data; a change to a pin re-downloads. Check with `--dry-run` before starting a
-rebuild.
+data; a change to a pin re-downloads. A source bump re-runs the pack and the MTP
+extract as well: those stages take the whole source tree, and `tools/iq_pack.py`
+and `tools/mtp_*` move with it. Check with `--dry-run` before starting a rebuild.
 
 ```sh
-# another card: hipArchs is a callPackage parameter of the package
-nix build --impure --expr '(import <nixpkgs> { system = "x86_64-linux"; }).callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; }'
+# another card: hipArchs is a callPackage parameter of the package. Use the flake's locked nixpkgs, not
+# <nixpkgs>: another nixpkgs means another ROCm and hipBLASLt, and a table is valid for one version only.
+nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = import f.inputs.nixpkgs { system = "x86_64-linux"; }; in pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; }'
 
 # another model size: model is the other callPackage parameter (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S,
 # Gyro-S, Gyro-M)

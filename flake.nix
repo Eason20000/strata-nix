@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     # the project source is not an input: the package fetches it itself with pkgs.fetchFromGitHub,
-    # pinned to the v0.2.1 tag (the `version` in the package). To track main or bump the version,
+    # pinned to the v0.2.1.4 tag (the `version` in the package). To track main or bump the version,
     # change the fetch in pkgs/by-name/st/strata/package.nix.
   };
 
@@ -26,6 +26,7 @@
       strata-iq2-xs = pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { model = "IQ2_XS"; };
       # the same package for the other sizes the pinned repositories carry: the two larger GSQ-RCO quants
       # (Q2_0 is the fourth), and the two Gyro trellis quants, which are one file each and want less memory
+      strata-q2-0 = pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { model = "Q2_0"; };
       strata-iq3-xxs = pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { model = "IQ3_XXS"; };
       strata-iq3-s = pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { model = "IQ3_S"; };
       strata-gyro-s = pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { model = "Gyro-S"; };
@@ -36,6 +37,7 @@
       packages.x86_64-linux = {
         strata = strata-iq2-xs;
         strata-iq2-xs = strata-iq2-xs;
+        strata-q2-0 = strata-q2-0;
         strata-iq3-xxs = strata-iq3-xxs;
         strata-iq3-s = strata-iq3-s;
         strata-gyro-s = strata-gyro-s;
