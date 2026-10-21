@@ -16,8 +16,8 @@
 }:
 let
   # The tag these tools are taken from: the last release that changed the packing tools. It is not the
-  # engine's version and does not move with it, though today it happens to be the same tag, so the two
-  # fetches collapse to one store path.
+  # engine's version and does not move with it - v0.2.2 left every file below byte-identical, so this pin
+  # stays where v0.2.1.4 put it and the two fetches are two store paths.
   version = "0.2.1.4";
   src = fetchFromGitHub {
     owner = "Niko1221";

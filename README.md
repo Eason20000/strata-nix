@@ -160,3 +160,12 @@ variables into the generated config: `services.strata.hipWmma` (matrix-core atte
 args switch from `--resident-experts` to `--mmap-experts`). Anything else the engine reads from the
 environment goes in `services.strata.env`, which is applied after them. The fourth switch is the server's
 rather than the engine's: `services.strata.hipblasltTable` writes a config key, not an environment variable.
+
+Rather than a card list, since v0.2.2 a machine with more than one card can say what each one is for:
+`services.strata.gpuRoles = { "1" = "main"; "0" = "helper"; }` — Main takes the last layers, the draft layer and the
+final check of every window, a Helper a share of the layers and of the expert cache, and an Off card no process at
+all. It replaces `services.strata.gpu` (the server reads a hand-written card list as the order and ignores the
+roles), and with neither set the server puts the fastest card last and never puts built-in graphics last.
+`services.strata.engineNice` is another of the server's own switches: v0.2.2 starts the engine at nice +5 on a PC
+whose graphics is part of the CPU so the desktop keeps its CPU share, and `0` turns that off — what a headless
+machine wants.

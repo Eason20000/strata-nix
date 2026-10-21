@@ -64,6 +64,12 @@ let
     // (lib.optionalAttrs (cfg.coldOverlap != null) { STRATA_COLD_OVERLAP = toString cfg.coldOverlap; })
     // (lib.optionalAttrs (cfg.ioPrefetch != null) {
       STRATA_IO_PREFETCH = if cfg.ioPrefetch then "1" else "0";
+    })
+    # the priority the server gives the engine process. Since v0.2.2 the server starts it at nice +5 on a PC
+    # whose graphics is part of the CPU so the desktop keeps its CPU share; the server reads this from the
+    # config's env rather than the engine reading it.
+    // (lib.optionalAttrs (cfg.engineNice != null) {
+      STRATA_ENGINE_NICE = toString cfg.engineNice;
     });
 
   # The hipBLASLt table switch belongs to the server rather than to the engine's environment, so it is a
@@ -89,6 +95,7 @@ let
           --argjson extra '${builtins.toJSON (tuningCfg // cfg.extraConfig)}' \
           --argjson args '${builtins.toJSON cfg.engineArgs}' \
           --argjson model '${builtins.toJSON cfg.modelName}' \
+          --argjson roles '${builtins.toJSON cfg.gpuRoles}' \
           --argjson ctx '${builtins.toJSON cfg.maxContext}' \
           --argjson trained '${toString trainedContext}' \
           '# rewrite one flag: drop every occurrence of it and the value that follows it, then append
@@ -116,6 +123,7 @@ let
                  env: (($base[0].env // {}) + $env),
                  args: engine_args($base[0]) }
              + (if $model != null then { model_name: $model } else {} end)
+             + (if $roles != null then { gpu_roles: $roles } else {} end)
              + $extra' > $out
       '';
 
@@ -293,7 +301,42 @@ in
       default = null;
       example = "0,1";
       description = "The GPU (or the layer split across several, as \"0,1\") the engine runs on. Null:
-        the engine's own choice.";
+        the engine's own choice. With several cards the server puts the faster one last - the Main card,
+        which holds the last layers - and never puts built-in graphics last. This is the flag form of the
+        choice, and it wins over services.strata.gpuRoles, which says the roles themselves.";
+    };
+
+    gpuRoles = lib.mkOption {
+      type = types.nullOr (
+        types.attrsOf (
+          types.enum [
+            "main"
+            "helper"
+            "off"
+          ]
+        )
+      );
+      default = null;
+      example = lib.literalExpression ''
+        { "1" = "main"; "0" = "helper"; }
+      '';
+      description = "What each graphics card is for on a machine with more than one, since v0.2.2: Main
+        holds the last layers, the draft layer and the final check of every window, a Helper holds a share
+        of the layers and of the expert cache, and an Off card gets no process at all. The keys are the card
+        numbers the engine reports. This replaces services.strata.gpu rather than adding to it - passing
+        --gpu is read as a hand-edited card list, which the server says it ignores. Null: the server's
+        recommendation, which starts the fastest card as Main and a card of 8 GB or less as Off.";
+    };
+
+    engineNice = lib.mkOption {
+      type = types.nullOr types.ints.unsigned;
+      default = null;
+      example = 0;
+      description = "The nice value the server starts the engine process with (STRATA_ENGINE_NICE). Since
+        v0.2.2 the server uses +5 on a PC whose graphics is part of the CPU (Strix Halo and the other
+        APUs), because the engine's CPU pool would otherwise compete with the desktop for the CPU. Null:
+        that automatic choice; 0 turns it off, which is what a headless machine wants - nothing else runs
+        there, and the penalty only costs the engine.";
     };
 
     stateDir = lib.mkOption {
@@ -414,6 +457,27 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # a gpu_roles the server cannot read is ignored rather than refused, so the shape is checked here
+    assertions = lib.optionals (cfg.gpuRoles != null) [
+      {
+        assertion = cfg.gpu == null;
+        message = "services.strata.gpu and services.strata.gpuRoles both choose cards, and --gpu wins: the server reads a card list it did not write as the person's order and ignores the roles. Keep one of the two.";
+      }
+      {
+        assertion = lib.all (k: builtins.match "[0-9]+" k != null) (builtins.attrNames cfg.gpuRoles);
+        message = "services.strata.gpuRoles keys are card numbers as strings, as { \"1\" = \"main\"; \"0\" = \"helper\"; }.";
+      }
+      {
+        assertion = lib.any (r: r != "off") (builtins.attrValues cfg.gpuRoles);
+        message = "services.strata.gpuRoles sets every card to off, which the server ignores (it falls back to the engine's own choice), and this engine cannot start without a card. Name one card main or helper.";
+      }
+      {
+        assertion =
+          builtins.length (builtins.attrValues (lib.filterAttrs (_: r: r == "main") cfg.gpuRoles)) <= 1;
+        message = "services.strata.gpuRoles names one Main card at most; the others are helper or off.";
+      }
+    ];
+
     users.users.${cfg.user} = {
       group = cfg.group;
       isSystemUser = true;

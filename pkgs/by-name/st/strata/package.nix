@@ -37,9 +37,9 @@ let
   rocm = rocmPackages;
 
   # The repository tag. The engine's own version is a separate number (CMakeLists.txt's project
-  # version, 0.1.46.3 for this tag), and BUILD.json carries that one, because that is what the server
+  # version, 0.1.47 for this tag), and BUILD.json carries that one, because that is what the server
   # reads as the engine's version.
-  version = "0.2.1.4";
+  version = "0.2.2";
   # The target list as a list. A semicolon-separated string is accepted too, which is the form CMake
   # and the source's own scripts take; services.strata.hipArchs passes a list.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
@@ -53,7 +53,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-lLfTVwKrgJ+2/tH29G6XwR2MwMbOxS7UBgOIthZI7PU=";
+    hash = "sha256-rZqp6GjcaDzwL9FjBxCrh3DNfF8j9QT7S0kN7BVD+vg=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the
@@ -98,7 +98,7 @@ let
   # can read its pack.
   m =
     model.passthru.strata
-    or (throw "the model passed to the Strata package must be one of the strata-model-* packages: it carries no passthru.strata, so the assembly cannot name its shards, its pack or its image encoder");
+      or (throw "the model passed to the Strata package must be one of the strata-model-* packages: it carries no passthru.strata, so the assembly cannot name its shards, its pack or its image encoder");
 
   # nixpkgs has no single /opt/rocm prefix: each package is its own store path, and CMake's
   # find_package(... CONFIG) finds the configs against them through CMAKE_PREFIX_PATH. What each is for:
@@ -344,7 +344,7 @@ runCommand "strata-${m.size}-${version}"
     sed -i -e "s|@OUT@|$out|" -e "s|@MODEL@|${m.size}|" -e "s|@PACK@|${m.packName}|" -e "s|@MODEL_NAME@|${m.modelName}|" -e "s|@S1@|${m.shard1}|" -e "s|@PLE@|${m.ple}|" -e "s|@MMPROJ@|${m.mmprojName}|" $out/etc/strata/strata.json
     # the metadata setup.py's installer records and the server reads from beside the engine. "version" is
     # the engine's own number, read out of the source it was built from rather than the package's version,
-    # because the two move apart: this release is tagged v0.2.1 and its engine is 0.1.46. The vision
+    # because the two move apart: this release is tagged v0.2.2 and its engine is 0.1.47. The vision
     # keys are what setup.py writes for a HIP engine with a GPU reader, and the server uses vision_archs to
     # decide whether the GPU reader covers the card it found (strata_control/vision_reader.py).
     engineVersion=$(sed -n 's/^[[:space:]]*project(strata VERSION \([0-9.]*\).*/\1/p' ${src}/CMakeLists.txt | head -1)

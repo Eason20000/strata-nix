@@ -45,7 +45,7 @@ let
   # extra iq_pack.py flags: none for the GSQ-RCO files
   packArgs = "";
   # the first engine version setup.py accepts for this family (its MIN_ENGINE)
-  minEngine = "0.1.45";
+  minEngine = "0.1.46";
   # setup.py's MODELS: the memory this size wants (RAM, per setup.py's MODELS) and the download in GB
   ram = "60";
   download = "75.8";

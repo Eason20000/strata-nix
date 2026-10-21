@@ -72,7 +72,7 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `fetchFromGitHub`, pinned to the tag matching `version`. A flake input named
   `strata` once shadowed the derivation built from it inside its own definition
   and recursed; do not reintroduce one.
-- The tag and the engine's version are different numbers: v0.2.1.4 builds engine 0.1.46.3, and
+- The tag and the engine's version are different numbers: v0.2.2 builds engine 0.1.47, and
   `bin/BUILD.json` carries the engine's, which the assembly reads out of `CMakeLists.txt`'s
   `project(strata VERSION ...)` rather than hardcoding it. The server reads that file as the engine's
   version, and `setup.py` compares it against per-model minimums (`GYRO_ENGINE` and friends), so a
