@@ -40,9 +40,9 @@ let
   rocm = rocmPackages;
 
   # The repository tag. The engine's own version is a separate number (CMakeLists.txt's project
-  # version, 0.1.45.3 for this tag), and BUILD.json carries that one, because that is what the server
+  # version, 0.1.46 for this tag), and BUILD.json carries that one, because that is what the server
   # reads as the engine's version.
-  version = "0.2.0-beta";
+  version = "0.2.1";
   # The target list as a list. A semicolon-separated string is accepted too, which is what the
   # NixOS module's services.strata.hipArchs passes.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
@@ -56,7 +56,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-7yRnyn0lrl3yuoCtt0+xUeWQuuPwM2ChL7tkykAKrow=";
+    hash = "sha256-B0L3tqB+yVi2hkbfTVey4NwaYMH/w+ioG71q77ueqKI=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the
@@ -555,6 +555,13 @@ runCommand "strata-${model}-${version}"
       # `nix run .#strata -- --help`: the engine's own --help, which prints the usage without a GPU
       mainProgram = "strata";
     };
+    # The compile stages as passthru: a version bump can check that the C++ still configures and builds
+    # without pulling the ~120 GB of model downloads (nix build .#strata.passthru.engine).
+    passthru = {
+      engine = engine;
+      vision = visionBin;
+      visionHip = visionHipBin;
+    };
   }
   ''
     # serve/server.py resolves symlinks for its ROOT (Path(__file__).resolve().parents[1]), so the Python
@@ -629,7 +636,7 @@ runCommand "strata-${model}-${version}"
     sed -i -e "s|@OUT@|$out|" -e "s|@MODEL@|${model}|" -e "s|@PACK@|${packName}|" -e "s|@MODEL_LOWER@|${lib.toLower model}|" -e "s|@FAM_NAME@|${fam.name}|" -e "s|@S1@|${s1}|" -e "s|@PLE@|${pleName}|" -e "s|@MMPROJ@|${mmprojName}|" $out/etc/strata/strata.json
     # the metadata setup.py's installer records and the server reads from beside the engine. "version" is
     # the engine's own number, read out of the source it was built from rather than the package's version,
-    # because the two move apart: this release is tagged v0.2.0-beta and its engine is 0.1.45.3. The vision
+    # because the two move apart: this release is tagged v0.2.1 and its engine is 0.1.46. The vision
     # keys are what setup.py writes for a HIP engine with a GPU reader, and the server uses vision_archs to
     # decide whether the GPU reader covers the card it found (strata_control/vision_reader.py).
     engineVersion=$(sed -n 's/^[[:space:]]*project(strata VERSION \([0-9.]*\).*/\1/p' ${src}/CMakeLists.txt | head -1)
@@ -647,13 +654,38 @@ runCommand "strata-${model}-${version}"
     }
     EOF
     sed -i "s|@ENGINE_VERSION@|$engineVersion|" $out/bin/BUILD.json
-    # strata-server: the Python server over the stored engine
+    # Since 0.2.1 an AMD engine package carries the hipBLASLt tuning tables of tools/hip in tuning/ beside
+    # the engine and says in BUILD.json which hipBLASLt it was built against. A table's solution ids are
+    # valid for one architecture family and one hipBLASLt version, so upstream's own staging script reads
+    # the version from the headers this package builds against and copies only the tables that match - with
+    # nixpkgs' hipBLASLt 1.2.2 that is gfx1100 and gfx1201, and nothing for gfx1151, whose tables need
+    # 1.4/1.5; the script prints what is missing. strata-server picks the table for the card at startup and
+    # logs the reason, so the service log says once per start which table the prompt path uses.
+    PYTHONDONTWRITEBYTECODE=1 "@PY@/bin/python3" ${src}/packaging/stage_tuning.py --stage $out/bin --archs "${archString}" --rocm ${rocm.hipblaslt}
+    # strata-server: the Python server over the stored engine. The engine reads one table path from its
+    # environment, and the card is only known at start, so the wrapper asks the server's own chooser
+    # (strata_control/hipblaslt_tuning.py) which of the shipped tables fits this PC. Opt-in as upstream is:
+    # STRATA_HIPBLASLT_TABLE=on, or "hipblaslt_table": true in the config - "auto" leaves the card's plain
+    # hipBLAS alone except on gfx1151, for which nixpkgs' hipBLASLt has no table. The engine checks the
+    # table's architecture and version again and falls back to plain hipBLAS for anything else.
     cat > $out/bin/strata-server <<'EOF'
     #!/bin/sh
     export STRATA_ROOT="@OUT@"
     export PYTHONNOUSERSITE=1
     cd "$STRATA_ROOT"
-    exec "@PY@/bin/python3" -m serve.server --engine strata --config "$STRATA_ROOT/etc/strata/strata.json" "$@"
+    CONF="$STRATA_ROOT/etc/strata/strata.json"
+    prev=
+    for a in "$@"; do
+      case "$a" in
+        --config=*) CONF="''${a#--config=}" ;;
+        *) [ "$prev" = "--config" ] && CONF="$a" ;;
+      esac
+      prev=$a
+    done
+    export STRATA_CONFIG="$CONF"
+    TABLE=$("@PY@/bin/python3" -c 'import json,os,sys; r=os.environ["STRATA_ROOT"]; cfg=json.load(open(os.environ["STRATA_CONFIG"])); sys.path.insert(0,r); from strata_control import hipblaslt_tuning as ht; d=ht.resolve(r+"/bin", ht.present_archs(cfg), cfg=cfg); d.message and print(d.message, file=sys.stderr); print(d.path or "")')
+    [ -n "$TABLE" ] && export STRATA_HIPBLASLT_TUNING="$TABLE"
+    exec "@PY@/bin/python3" -m serve.server --engine strata --config "$CONF" "$@"
     EOF
     sed -i -e "s|@OUT@|$out|" -e "s|@PY@|${python}|" $out/bin/strata-server
     chmod +x $out/bin/strata-server

@@ -42,6 +42,13 @@ let
       STRATA_IO_PREFETCH = if cfg.ioPrefetch then "1" else "0";
     });
 
+  # The hipBLASLt table switch belongs to the server rather than to the engine's environment, so it is a
+  # config key (strata_control/hipblaslt_tuning.py reads "hipblaslt_table") that bin/strata-server applies
+  # when it picks the table for the card it finds.
+  tuningCfg = lib.optionalAttrs (cfg.hipblasltTable != null) {
+    hipblaslt_table = cfg.hipblasltTable;
+  };
+
   # The config is written at build time, from the package's own file: the package is an input of this
   # derivation, so the store paths inside the config are real dependencies rather than text. (A
   # string read from the store at eval time carries no context and cannot be written back out.)
@@ -55,7 +62,7 @@ let
           --slurpfile base ${cfg.package}/etc/strata/strata.json \
           --arg cwd "${cfg.stateDir}" \
           --argjson env '${builtins.toJSON (perfEnv // cfg.env)}' \
-          --argjson extra '${builtins.toJSON cfg.extraConfig}' \
+          --argjson extra '${builtins.toJSON (tuningCfg // cfg.extraConfig)}' \
           --argjson args '${builtins.toJSON cfg.engineArgs}' \
           --argjson model '${builtins.toJSON cfg.modelName}' \
           --argjson ctx '${builtins.toJSON cfg.maxContext}' \
@@ -183,7 +190,7 @@ in
     };
 
     coldOverlap = lib.mkOption {
-      type = types.nullOr types.unsigned;
+      type = types.nullOr types.ints.unsigned;
       default = null;
       example = 0;
       description = "How many layers' experts the engine computes straight out of the page cache instead
@@ -205,6 +212,21 @@ in
         it changes nothing until services.strata.engineArgs replaces --resident-experts with
         --mmap-experts; upstream also turns it off on an AMD laptop APU whose driver resets with it and
         the adaptive expert tier.";
+    };
+
+    hipblasltTable = lib.mkOption {
+      type = types.nullOr types.bool;
+      default = null;
+      example = true;
+      description = "Whether the prompt's dense matrix products run on one of the measured hipBLASLt
+        solution tables the package ships in bin/tuning (the server's hipblaslt_table, which
+        bin/strata-server applies at start). Null: automatic, which upstream enables on gfx1151 only - and
+        nixpkgs' hipBLASLt has no gfx1151 table, so nothing is used until this is true. True: use the table
+        for the card, which a community A/B measured at 251 to 529 prompt tokens per second on Strix Halo.
+        False: never. A table changes which hipBLASLt solution runs, so answers can differ in the last
+        digits; the engine checks the table's architecture and hipBLASLt version against the card and falls
+        back to plain hipBLAS for anything it does not cover. To use a table of your own instead, set
+        STRATA_HIPBLASLT_TUNING to its path in services.strata.env - the server leaves that choice alone.";
     };
 
     host = lib.mkOption {

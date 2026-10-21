@@ -49,7 +49,9 @@ bin/strata-device     the device probe (--list-devices)
 bin/strata-server     the Python server wrapper
 bin/strata-vision     the image encoder (llama.cpp's mtmd), on the CPU: the fallback reader
 bin/strata-vision-hip the same encoder on the AMD GPU (ggml-hip), the reader the config names
-bin/BUILD.json        the engine version, backend, arch list, model size and picture readers actually compiled
+bin/BUILD.json        the engine version, backend, arch list, model size, picture readers and hipBLASLt
+                      version actually compiled
+bin/tuning/           the hipBLASLt prompt tables matching that version, for the archs that have one
 etc/strata/strata.json  the config the server reads
 pack/<size>           the packed model and the tokenizer derived from its GGUF metadata (symlink)
 models/<size>         the pinned GGUF file(s) (symlink): two shards, or one Gyro file
@@ -66,7 +68,7 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `fetchFromGitHub`, pinned to the tag matching `version`. A flake input named
   `strata` once shadowed the derivation built from it inside its own definition
   and recursed; do not reintroduce one.
-- The tag and the engine's version are different numbers: v0.2.0-beta builds engine 0.1.45.3, and
+- The tag and the engine's version are different numbers: v0.2.1 builds engine 0.1.46, and
   `bin/BUILD.json` carries the engine's, which the assembly reads out of `CMakeLists.txt`'s
   `project(strata VERSION ...)` rather than hardcoding it. The server reads that file as the engine's
   version, and `setup.py` compares it against per-model minimums (`GYRO_ENGINE` and friends), so a
@@ -109,6 +111,18 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
 - nixpkgs has no single `/opt/rocm` prefix: each ROCm package is its own store
   path, found through `CMAKE_PREFIX_PATH`, and the HIP compiler is
   `rocm.clr/bin/amdclang++`.
+- Since v0.2.1 an AMD engine package carries hipBLASLt prompt tables, and the assembly stages them with the
+  source's own `packaging/stage_tuning.py`: it reads the hipBLASLt version out of the headers it builds
+  against (`${rocm.hipblaslt}`), copies `tools/hip/<arch>-hipblaslt-<version>.txt` for the target archs into
+  `bin/tuning/`, and writes that version to `BUILD.json` as `hipblaslt_version`. Do not hand-copy the
+  tables: a table's solution ids are valid for one architecture family and one hipBLASLt version, and the
+  engine refuses a mismatch. nixpkgs' hipBLASLt is 1.2.2 (100202), which has tables for gfx1100 and gfx1201
+  and none for gfx1151 (those need 1.4 or 1.5), so the default target keeps plain hipBLAS. The server looks
+  for `tuning/` only for a config whose `exe` is `component:strata-engine`, which this package does not use,
+  so `bin/strata-server` asks `strata_control/hipblaslt_tuning.py` which table fits the card it finds and
+  exports `STRATA_HIPBLASLT_TUNING`. It stays off unless the run config says `"hipblaslt_table": true`
+  (`services.strata.hipblasltTable` writes it; a `STRATA_HIPBLASLT_TABLE` environment switch overrides the
+  config), because a table changes the prompt's floating-point sums.
 - `hipArchs`, `model` and `prefillMmq` are the caller-visible knobs. `hipArchs` is a list (or a `;`-joined string). It
   is validated by the source's own `cmake/hip_backend.cmake` — gfx1100/gfx1201 by the maintainers,
   gfx1101/gfx1200 by their owners, the rest (the default `gfx1151` included) build with a warning —
@@ -147,6 +161,7 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
 
 ```sh
 nix build .#strata                 # ~2 min compile; ~120 GB of pinned downloads on a cold cache
+nix build .#strata.passthru.engine # the compile stages alone (also .vision, .visionHip): no model downloads
 nix build .#strata --dry-run       # does this change invalidate the derivation? (nothing printed = cached)
 nix run .#strata -- --help         # the engine's usage, from the store (no GPU needed)
 nix flake check --no-build         # eval only: checks the derivation and the NixOS module

@@ -53,6 +53,9 @@ nix build --impure --expr '(import <nixpkgs> { system = "x86_64-linux"; }).callP
 
 All three are recorded in the package's `bin/BUILD.json`.
 
+The compile stages are `passthru` outputs, so a version bump can be checked without the ~120 GB of model
+downloads: `nix build .#strata.passthru.engine`, `.passthru.vision` and `.passthru.visionHip`.
+
 ## Run
 
 ```sh
@@ -85,6 +88,21 @@ section with `exe` at `bin/strata-vision` and `gpu` false. Turn images off by ma
 
 The GPU reader links rocBLAS (791 MB), which the engine itself does not need — that is the only cost of
 shipping it.
+
+## hipBLASLt tuning tables
+
+Since v0.2.1 an AMD engine package carries measured hipBLASLt solution tables, and the package stages the
+ones matching the hipBLASLt it links: `bin/tuning/<arch>-hipblaslt-<version>.txt`, with that version in
+`bin/BUILD.json` as `hipblaslt_version`. nixpkgs' hipBLASLt is 1.2.2 (100202), for which the source has
+tables for gfx1100 and gfx1201 and none for gfx1151 — its tables need hipBLASLt 1.4 or 1.5 — so a Strix
+Halo build keeps plain hipBLAS. A table decides which hipBLASLt solution runs the prompt's dense matrix
+products, so answers can differ in the last digits, and upstream's automatic choice takes one only on
+gfx1151, where a community A/B measured 251 to 529 prompt tokens per second. Since nixpkgs' hipBLASLt has
+no gfx1151 table, nothing is used here until you ask: `services.strata.hipblasltTable = true`, `false` to
+refuse one. `strata-server` picks the table for the card it finds at start and exports it to the engine,
+which checks the architecture and version again and falls back to plain hipBLAS for anything the table does
+not cover. To try a table of your own, set `STRATA_HIPBLASLT_TUNING` to its path in
+`services.strata.env` — the server leaves that choice alone.
 
 ## As a NixOS service
 
@@ -120,4 +138,5 @@ variables into the generated config: `services.strata.hipWmma` (matrix-core atte
 `true` is what a gfx11 card needs to get it at all), `services.strata.coldOverlap` and
 `services.strata.ioPrefetch` (both about reading the model file in place, so they only bite once the engine
 args switch from `--resident-experts` to `--mmap-experts`). Anything else the engine reads from the
-environment goes in `services.strata.env`, which is applied after them.
+environment goes in `services.strata.env`, which is applied after them. The fourth switch is the server's
+rather than the engine's: `services.strata.hipblasltTable` writes a config key, not an environment variable.
