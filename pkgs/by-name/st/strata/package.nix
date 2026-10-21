@@ -661,7 +661,7 @@ runCommand "strata-${model}-${version}"
     # nixpkgs' hipBLASLt 1.2.2 that is gfx1100 and gfx1201, and nothing for gfx1151, whose tables need
     # 1.4/1.5; the script prints what is missing. strata-server picks the table for the card at startup and
     # logs the reason, so the service log says once per start which table the prompt path uses.
-    PYTHONDONTWRITEBYTECODE=1 "@PY@/bin/python3" ${src}/packaging/stage_tuning.py --stage $out/bin --archs "${archString}" --rocm ${rocm.hipblaslt}
+    PYTHONDONTWRITEBYTECODE=1 ${python}/bin/python3 ${src}/packaging/stage_tuning.py --stage $out/bin --archs "${archString}" --rocm ${rocm.hipblaslt}
     # strata-server: the Python server over the stored engine. The engine reads one table path from its
     # environment, and the card is only known at start, so the wrapper asks the server's own chooser
     # (strata_control/hipblaslt_tuning.py) which of the shipped tables fits this PC. Opt-in as upstream is:
