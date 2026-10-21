@@ -52,8 +52,8 @@
       # config the server reads) over a model package. hipArchs and prefillMmq are its other parameters,
       # default [ "gfx1100" "gfx1151" "gfx1201" ] and true; for another card, callPackage it yourself:
       #   pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = strataPkgs.strata-model-iq3-s; inherit (strataPkgs) strata-mtp; }
-      # In a NixOS configuration, services.strata.hipArchs, services.strata.model and
-      # services.strata.prefillMmq do the same. The target list is validated by the source's own
+      # In a NixOS configuration, services.strata.hipArchs, services.strata.prefillMmq and
+      # services.strata.model (a size string the module maps to the matching model package) do the same. The target list is validated by the source's own
       # hip_backend.cmake (gfx1100 + gfx1201 maintainer-validated, gfx1101 + gfx1200 community-validated,
       # the rest - gfx1151 included - build with a warning; docs/AMD_HIP.md), and is recorded in the
       # package's bin/BUILD.json.
@@ -68,8 +68,7 @@
       # Packages exposed in this flake, each under its package name: the engine assembled over IQ2_XS, and the
       # pieces it is assembled from. A model package builds its payload alone - ~68 GB of downloads and the
       # pack - without the engine, and `nix build .#strata-model-iq3-s` is how to warm that cache before
-      # switching a service to it. The same names are what a configuration writes:
-      #   services.strata.model = strataFlake.packages.x86_64-linux.strata-model-iq2-xs;
+      # switching a service to it. A configuration asks for one by size: services.strata.model = "IQ3_S";
       packages.x86_64-linux = {
         strata = strata;
         default = strata;

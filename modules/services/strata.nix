@@ -28,15 +28,26 @@ let
 
   # How the flake wires the by-name packages, repeated here for the default package: they take the pinned
   # llama.cpp and the pinned Strata tools tree as arguments rather than importing them, so a configuration
-  # building them has to pass them in. services.strata.model and services.strata.mtp are packages, so a
-  # consumer may as well take them from the flake:
-  #   services.strata.model = strataFlake.packages.x86_64-linux.strata-model-iq3-s;
+  # building them has to pass them in.
   strataLlamaCpp = import ../../pkgs/by-name/st/strata/llama.cpp.nix {
     inherit (pkgs) fetchurl stdenvNoCC;
   };
   strataTools = pkgs.callPackage ../../pkgs/by-name/st/strata-tools/package.nix { };
   strataPayloadArgs = {
     inherit strataTools strataLlamaCpp;
+  };
+
+  # services.strata.model names a size and this picks the by-name package that carries it. The engine
+  # package takes a model package rather than a string - it is a by-name package and may only use its
+  # arguments, so it cannot go looking for its siblings - which leaves the choice to make here.
+  # The keys are setup.py's MODELS keys.
+  modelPackages = {
+    Q2_0 = "strata-model-q2-0";
+    IQ2_XS = "strata-model-iq2-xs";
+    IQ3_XXS = "strata-model-iq3-xxs";
+    IQ3_S = "strata-model-iq3-s";
+    Gyro-S = "strata-model-gyro-s";
+    Gyro-M = "strata-model-gyro-m";
   };
 
   # The longest context the model was trained on. Past it the rotary angles have to be rescaled, and
@@ -140,14 +151,14 @@ in
       default = pkgs.callPackage ../../pkgs/by-name/st/strata/package.nix {
         inherit (cfg)
           hipArchs
-          model
           mtp
           prefillMmq
           ;
+        model = pkgs.callPackage ../../pkgs/by-name/st/${modelPackages.${cfg.model}}/package.nix strataPayloadArgs;
       };
       description = "The Strata package to serve (the engine, the two picture readers and the server, assembled
-        over services.strata.model and services.strata.mtp). Set this to a package built for the card in the
-        machine, or to the flake's own package.";
+        over the model package services.strata.model selects and services.strata.mtp). Set this to a package built
+        for the card in the machine, or to the flake's own package.";
     };
 
     hipArchs = lib.mkOption {
@@ -167,17 +178,16 @@ in
     };
 
     model = lib.mkOption {
-      type = types.package;
-      default = pkgs.callPackage ../../pkgs/by-name/st/strata-model-iq2-xs/package.nix strataPayloadArgs;
-      example = lib.literalExpression "strataFlake.packages.x86_64-linux.strata-model-iq3-s";
-      description = "The model package the server runs: its pinned GGUF shards, the pack and tokenizer cut from
-        them, and the image encoder. Only used to build the default package, so override services.strata.package
-        instead when you want a package that is already built. The flake exposes one per size as
-        packages.x86_64-linux.strata-model-{iq2-xs,q2-0,iq3-xxs,iq3-s,gyro-s,gyro-m} (the GSQ-RCO quants and the
-        Gyro trellis quants, one by-name package each under pkgs/by-name/st/). The size decides which pins the
-        package carries and which pack it runs, and its experts want memory (setup.py's MODELS: IQ2_XS 48 GB of
-        RAM, IQ3_XXS 60, IQ3_S 62, Gyro-S 27.6 and Gyro-M 35 of VRAM and RAM together), so the machine must have
-        that much.";
+      type = types.enum (lib.attrNames modelPackages);
+      default = "IQ2_XS";
+      example = "IQ3_S";
+      description = "Which model to serve. It picks the model package the default package is assembled over -
+        pkgs/by-name/st/strata-model-<size>/, carrying that size's pinned GGUF shards, the pack and tokenizer cut
+        from them, and the image encoder - so switching size keeps the engine, both picture readers and the draft
+        layer cached. The size decides which pins that package carries and which pack it runs, and its experts
+        want memory (setup.py's MODELS: IQ2_XS 48 GB of RAM, IQ3_XXS 60, IQ3_S 62, Gyro-S 27.6 and Gyro-M 35 of
+        VRAM and RAM together), so the machine must have that much. To serve a model package the flake does not
+        carry, set services.strata.package to one assembled over it.";
     };
 
     mtp = lib.mkOption {

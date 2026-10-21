@@ -142,8 +142,10 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   it requires HIP, which this package always enables). It reaches the engine stage alone, so flipping it
   rebuilds the engine and the assembly, not the pack, the encoder or the draft layer, and it is recorded in
   `bin/BUILD.json` as `prefill_mmq`.
-- Each size is its own by-name package, and it is a package rather than a string all the way to the module:
-  `services.strata.model = <flake>.packages.x86_64-linux.strata-model-iq3-s`, the same name `nix build` takes. Each carries its own pins and its own
+- Each size is its own by-name package. `services.strata.model` is a size string (`"IQ3_S"`) and the module
+  maps it to `pkgs/by-name/st/strata-model-iq3-s/` — the engine package takes a model *package*, never a
+  string, because a by-name package may only use its function arguments and cannot go looking for its siblings.
+  Each model package carries its own pins and its own
   pack derivation (`strata-pack-<pack>`, the size lowercased without underscores — one name for all sizes
   would let the caches collide) and exposes `passthru.strata` as the contract the assembly reads: `size`,
   `packName`, `modelName`, `minEngine`, `ram`, `download`, `memoryNote`, `shard1`, `ple`, `mmprojName`, and the
