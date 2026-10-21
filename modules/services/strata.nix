@@ -26,6 +26,19 @@ let
   cfg = config.services.strata;
   types = lib.types;
 
+  # How the flake wires the by-name packages, repeated here for the default package: they take the pinned
+  # llama.cpp and the pinned Strata tools tree as arguments rather than importing them, so a configuration
+  # building them has to pass them in. services.strata.model and services.strata.mtp are packages, so a
+  # consumer may as well take them from the flake:
+  #   services.strata.model = strataFlake.packages.x86_64-linux.strata-model-iq3-s;
+  strataLlamaCpp = import ../../pkgs/by-name/st/strata/llama.cpp.nix {
+    inherit (pkgs) fetchurl stdenvNoCC;
+  };
+  strataTools = pkgs.callPackage ../../pkgs/by-name/st/strata-tools/package.nix { };
+  strataPayloadArgs = {
+    inherit strataTools strataLlamaCpp;
+  };
+
   # The longest context the model was trained on. Past it the rotary angles have to be rescaled, and
   # setup.py's answer there is yarn with the factor the final context over the trained one.
   trainedContext = 262144;
@@ -125,10 +138,16 @@ in
     package = lib.mkOption {
       type = types.package;
       default = pkgs.callPackage ../../pkgs/by-name/st/strata/package.nix {
-        inherit (cfg) hipArchs model prefillMmq;
+        inherit (cfg)
+          hipArchs
+          model
+          mtp
+          prefillMmq
+          ;
       };
-      description = "The Strata package to serve (the engine, the model, the server). Set this to a
-        package built for the card in the machine, or to the flake's own package.";
+      description = "The Strata package to serve (the engine, the two picture readers and the server, assembled
+        over services.strata.model and services.strata.mtp). Set this to a package built for the card in the
+        machine, or to the flake's own package.";
     };
 
     hipArchs = lib.mkOption {
@@ -148,16 +167,25 @@ in
     };
 
     model = lib.mkOption {
-      type = types.str;
-      default = "IQ2_XS";
-      example = "Gyro-S";
-      description = "The model size the default package is built with, one of the sizes the pinned
-        repositories carry (the GSQ-RCO quants IQ2_XS, IQ3_XXS, IQ3_S, Q2_0; the Gyro trellis quants
-        Gyro-S and Gyro-M). Only used to build the default package, so override services.strata.package
-        instead when you want a package that is already built. The size decides which pins the package
-        carries and which pack it runs, and its experts want memory (setup.py's MODELS: IQ2_XS 48 GB of
-        RAM, IQ3_XXS 60, IQ3_S 62, Gyro-S 27.6 and Gyro-M 35 of VRAM and RAM together), so the machine
-        must have that much.";
+      type = types.package;
+      default = pkgs.callPackage ../../pkgs/by-name/st/strata-model-iq2-xs/package.nix strataPayloadArgs;
+      example = lib.literalExpression "strataFlake.packages.x86_64-linux.strata-model-iq3-s";
+      description = "The model package the server runs: its pinned GGUF shards, the pack and tokenizer cut from
+        them, and the image encoder. Only used to build the default package, so override services.strata.package
+        instead when you want a package that is already built. The flake exposes one per size as
+        packages.x86_64-linux.strata-model-{iq2-xs,q2-0,iq3-xxs,iq3-s,gyro-s,gyro-m} (the GSQ-RCO quants and the
+        Gyro trellis quants, one by-name package each under pkgs/by-name/st/). The size decides which pins the
+        package carries and which pack it runs, and its experts want memory (setup.py's MODELS: IQ2_XS 48 GB of
+        RAM, IQ3_XXS 60, IQ3_S 62, Gyro-S 27.6 and Gyro-M 35 of VRAM and RAM together), so the machine must have
+        that much.";
+    };
+
+    mtp = lib.mkOption {
+      type = types.package;
+      default = pkgs.callPackage ../../pkgs/by-name/st/strata-mtp/package.nix strataPayloadArgs;
+      description = "The MTP draft layer the engine speculates with, as its own package (pkgs/by-name/st/strata-mtp/).
+        It is size-independent, so switching services.strata.model keeps it cached. Only used to build the default
+        package.";
     };
 
     prefillMmq = lib.mkOption {

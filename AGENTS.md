@@ -30,17 +30,21 @@ Nix-specific:
 ## Repository Structure
 
 ```text
-flake.nix                          # thin wrapper: callPackage the package, expose packages.* and nixosModules.strata
-pkgs/by-name/st/strata/            # the package, in nixpkgs' by-name layout (this directory is what would move to nixpkgs)
-  package.nix                      # the source pin, the build, and the config the server reads; hipArchs, model and prefillMmq are its parameters
-  llama.cpp.nix                    # pinned llama.cpp, source-only store path, used as -DSTRATA_GGML_DIR
+flake.nix                          # wires the pins together and exposes packages.* (strata, strata-tools, strata-mtp and one strata-model-<size> per size) and nixosModules.strata
+pkgs/by-name/st/strata/            # the engine and its assembly, in nixpkgs' by-name layout (this directory is what would move to nixpkgs)
+  package.nix                      # the source pin, the build, and the config the server reads; hipArchs, model, mtp and prefillMmq are its parameters
+  llama.cpp.nix                    # pinned llama.cpp, source-only store path, used as -DSTRATA_GGML_DIR and for gguf-py
+pkgs/by-name/st/strata-tools/      # the pinned Strata tools tree the pack and the draft-layer extract run, at its own rev
+pkgs/by-name/st/strata-mtp/        # the MTP draft layer: the pinned checkpoint shards plus the extract
+pkgs/by-name/st/strata-model-<size>/  # one per size (iq2-xs, q2-0, iq3-xxs, iq3-s, gyro-s, gyro-m): its GGUF shards, its pack/tokenizer, its family mmproj
 modules/services/strata.nix        # the services.strata NixOS module (the service as a systemd unit)
 README.md                          # build/run/service usage, and the layout table
 ```
 
-The package is one output whose closure is the whole package — engine, Python server, model,
+The engine package is one output whose closure is the whole package — engine, Python server, model,
 tokenizer, MTP draft layer, image encoders, ROCm runtime. It is the assembly: real content for the
-Python tree the server runs from, symlinks into the store paths the stage derivations produce. With
+Python tree the server runs from, symlinks into the store paths the stage derivations and the model and
+draft-layer packages produce. With
 this output layout:
 
 ```text
@@ -77,10 +81,15 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `buildInputs`: stdenv `source`s every bare file there as a setup hook.
 - `configurePhase = "true"` is deliberate. stdenv's default configure would run
   cmake with no flags and hit the network `FetchContent` for llama.cpp.
-- The build is one derivation per stage so the expensive stages cache on their own. The pack and the
-  MTP stage read only the pins, the tools scripts and `toolsPython` — never `hipArchs`, ROCm or CMake —
-  so they stay cached when the target list changes. The engine stage must stay a `stdenv.mkDerivation`
-  with `propagatedBuildInputs = rocmLibs`, which is what patches the RPATH; a `runCommand` would not.
+- The build is one derivation per stage so the expensive stages cache on their own. The engine stage must
+  stay a `stdenv.mkDerivation` with `propagatedBuildInputs = rocmLibs`, which is what patches the RPATH; a
+  `runCommand` would not.
+- The pack and the draft-layer extract are not stages of the engine package at all: they live in the model
+  packages and `strata-mtp`, which take the pinned `strata-tools` store path as an argument and never see the
+  engine's source. Nix is input-addressed, so a stage reading `${src}/tools/iq_pack.py` re-runs over ~67 GB on
+  every engine release even when the script is byte-identical. Bumping `version` in the engine package leaves
+  the six model drvPaths, the pack drvPath and the mtp drvPath byte-identical; only the engine, both readers
+  and the assembly change.
 - The assembly keeps `serve/` and `tools/` as real copies: `serve/server.py` takes
   `Path(__file__).resolve().parents[1]` as its root, so a symlinked `serve/` would point it at the wrong
   store path. Only the payloads are links, and the closure still contains them. Since 0.2.0 the server
@@ -124,7 +133,7 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   exports `STRATA_HIPBLASLT_TUNING`. It stays off unless the run config says `"hipblaslt_table": true`
   (`services.strata.hipblasltTable` writes it; a `STRATA_HIPBLASLT_TABLE` environment switch overrides the
   config), because a table changes the prompt's floating-point sums.
-- `hipArchs`, `model` and `prefillMmq` are the caller-visible knobs. `hipArchs` is a list (or a `;`-joined string). It
+- `hipArchs`, `model`, `mtp` and `prefillMmq` are the caller-visible knobs. `hipArchs` is a list (or a `;`-joined string). It
   is validated by the source's own `cmake/hip_backend.cmake` — gfx1100/gfx1201 by the maintainers,
   gfx1101/gfx1200 by their owners, the rest (the default `gfx1151` included) build with a warning —
   and is recorded in `bin/BUILD.json`. Nothing patches that file: the arch list this repository used to
@@ -133,24 +142,35 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   it requires HIP, which this package always enables). It reaches the engine stage alone, so flipping it
   rebuilds the engine and the assembly, not the pack, the encoder or the draft layer, and it is recorded in
   `bin/BUILD.json` as `prefill_mmq`.
-- `model` selects the size: the model pin and the pack, so each size has its own pack derivation
-  (`strata-pack-<size>`) and its own `pack/<size>` output — one name for all sizes would let the caches
-  collide. Shard 2 is byte-identical in every GSQ-RCO size (the PLE table alone), so it is pinned once.
-  The size reaches the pins and the pack only, so switching sizes keeps the engine, both encoders and the
-  draft layer cached. `IQ2_XS` is the default; the IQ3 sizes want more RAM for their experts (60 and 62 GB
-  in `setup.py`'s `MODELS`, against IQ2_XS's 48), which is what the generated config's comment states.
-- The `families` table carries what differs between the two model lines, mirroring `setup.py`'s
+- Each size is its own by-name package, and it is a package rather than a string all the way to the module:
+  `services.strata.model = <flake>.packages.x86_64-linux.strata-model-iq3-s`, the same name `nix build` takes. Each carries its own pins and its own
+  pack derivation (`strata-pack-<pack>`, the size lowercased without underscores — one name for all sizes
+  would let the caches collide) and exposes `passthru.strata` as the contract the assembly reads: `size`,
+  `packName`, `modelName`, `minEngine`, `ram`, `download`, `memoryNote`, `shard1`, `ple`, `mmprojName`, and the
+  `shards`/`pack`/`mmprojDir` store paths. The assembly links `${model}/shards`, `${model}/pack`,
+  `${model}/mmproj` and `${mtp}`, and fails the build when the engine is older than `minEngine` (setup.py's
+  `MIN_ENGINE` and `GYRO_ENGINE`). Switching size rebuilds the assembly alone: the engine, both encoders and
+  the draft layer stay cached.
+- What differs between the two model lines is written in each model package, mirroring `setup.py`'s
   `FAMILIES`/`MODELS`: the repository and its pinned revision, the published file names, the shard count,
-  the `model_name` prefix, and any extra `iq_pack.py` flag. Gyro (agentionai's trellis TQ quants) is one
+  the `model_name` prefix, and any extra `iq_pack.py` flag. It repeats per file rather than living in one
+  shared table because a `by-name` package may only use its function arguments; the mmproj pin repeats the
+  same way and collapses to one store path. Shard 2 is byte-identical in every GSQ-RCO size (the PLE table
+  alone), so every size pins the same file. Gyro (agentionai's trellis TQ quants) is one
   GGUF that holds the n-gram table, so `--ple-gguf` points at the same file as `--native`, its pack needs
   `--compat-bf16`, and its `experts.bin` is marked v5 with a `hadamard.txt` beside it (Hadamard-folded
   experts an older engine would read as noise). Its mmproj is the GSQ-RCO one, pinned once for both
   families. The trellis MMQ prompt kernels come from `cmake/strata_ggml_tq_overlay.cmake`, which writes an
   overlay of the pinned llama.cpp's ggml-cuda headers at configure time; `STRATA_MMQ_TQ_OVERLAY` is ON
   upstream and this package leaves it at its default.
-- `llama.cpp.nix` is `import`ed directly. That is fine here, but a nixpkgs
-  `by-name` package may only use its function arguments, so it would have to
-  become its own `by-name` entry to be upstreamed.
+- `llama.cpp.nix` is `import`ed directly by the engine package, the flake and the service module. That is
+  fine here, but a nixpkgs `by-name` package may only use its function arguments, so it would have to
+  become its own `by-name` entry to be upstreamed. `strata-tools`, `strata-mtp` and the model packages
+  already follow that rule: they take `strataTools` and `strataLlamaCpp` as arguments, which the flake and
+  the module pass in.
+- The model and draft-layer packages carry `unfreeRedistributable` meta (the Qwen Community License), so
+  anything building them needs unfree allowed; this flake imports nixpkgs with `config.allowUnfree = true`
+  and a consumer's configuration needs the same. The engine, the readers and the tools pin stay MIT.
 - The output is read-only: the service can write only to `services.strata.stateDir`
   (`/var/lib/strata`). The GPU is reached through the kernel driver, so the unit
   keeps `/dev/kfd` and `/dev/dri` visible (no `PrivateDevices`), needs the
@@ -171,19 +191,20 @@ nix flake check --no-build         # eval only: checks the derivation and the Ni
 Plain `nix flake check` builds the package, so use `--no-build` for the quick
 check.
 
-A change to the build recipe re-runs the pack/extract steps over ~67 GB of model
-data; a change to a pin re-downloads. A source bump re-runs the pack and the MTP
-extract as well: those stages take the whole source tree, and `tools/iq_pack.py`
-and `tools/mtp_*` move with it. Check with `--dry-run` before starting a rebuild.
+A change to a model package's recipe re-runs its pack over ~67 GB of model data; a
+change to a pin re-downloads. An engine release touches neither: the pack and the
+extract run the `strata-tools` pin, and you move that pin only when `tools/iq_pack.py`
+or `tools/mtp_*` change, which re-runs the pack for every size and the checkpoint
+extract once. Check with `--dry-run` before starting a rebuild.
 
 ```sh
-# another card: hipArchs is a callPackage parameter of the package. Use the flake's locked nixpkgs, not
+# another card: hipArchs is a callPackage parameter of the engine package. Use the flake's locked nixpkgs, not
 # <nixpkgs>: another nixpkgs means another ROCm and hipBLASLt, and a table is valid for one version only.
-nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = import f.inputs.nixpkgs { system = "x86_64-linux"; }; in pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; }'
+nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = import f.inputs.nixpkgs { system = "x86_64-linux"; config.allowUnfree = true; }; p = f.packages.x86_64-linux; in pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = p.strata-model-iq2-xs; mtp = p.strata-mtp; }'
 
-# another model size: model is the other callPackage parameter (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S,
-# Gyro-S, Gyro-M)
-nix build .#strata-iq3-s
+# another model size: the payload alone (its downloads and its pack, no engine), then assemble over it
+nix build .#strata-model-iq3-s
+nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = import f.inputs.nixpkgs { system = "x86_64-linux"; config.allowUnfree = true; }; p = f.packages.x86_64-linux; in pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { model = p.strata-model-iq3-s; mtp = p.strata-mtp; }'
 
 # re-pin a hash after changing a pin
 nix-prefetch-url --unpack https://github.com/Niko1221/Strata/archive/v<version>.tar.gz

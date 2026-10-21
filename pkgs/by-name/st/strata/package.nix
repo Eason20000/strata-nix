@@ -1,19 +1,17 @@
-# Strata: the inference engine (HIP) and its Python server, with the model (IQ2_XS by default), its
-# derived tokenizer, the MTP draft layer and the image encoders (CPU and GPU), every download a pinned
-# fetchurl.
+# Strata: the inference engine (HIP), its Python server and its image encoders (CPU and GPU), assembled
+# over a model package and an MTP draft-layer package, every download a pinned fetchurl.
 #
-# One derivation per stage, so the expensive stages are cached on their own. The pack and the MTP draft
-# layer read only the pinned downloads and the tools scripts - no ROCm, no CMake, no HIP target list -
-# so changing hipArchs rebuilds the engine and the GPU picture reader, not the 6.5 minutes of pack work.
-# The package is the assembly: real content for the Python tree the server runs from, symlinks into the
-# store paths the other stages produce. Its closure is the whole package.
+# One derivation per stage, so the expensive stages are cached on their own. This package holds the
+# compiled stages only - the engine, the two picture readers, the Python tree, the tuning tables and the
+# config the server reads. The model (its shards, its pack and its tokenizer, its image encoder) and the
+# draft layer are separate packages passed in, so a Strata release rebuilds the compiled stages alone and
+# never the ~67 GB of pack work, and a model size change rebuilds nothing here.
 #
-# This is the package definition; the flake callPackages it (flake.nix). Everything - the source pin,
-# the build, the config the server reads - lives here. The three things the caller may choose are the
-# HIP target list, the model size and the MMQ prompt path, all parameters below:
-#   pkgs.callPackage path/to/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = "IQ3_S"; prefillMmq = false; }
-# The model changes the pins and the pack stage only; the engine, the image encoder and the draft layer
-# are the same for every size. prefillMmq reaches the engine alone.
+# This is the package definition; the flake callPackages it (flake.nix). Everything - the source pin, the
+# build, the config the server reads - lives here, and it reads nothing outside this directory: the four
+# things the caller chooses are all parameters below.
+#   pkgs.callPackage path/to/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = strataPkgs.models.iq3_s; mtp = strataPkgs.mtp; prefillMmq = false; }
+# hipArchs and prefillMmq reach the compiled stages; model and mtp reach the config and the closure.
 
 {
   lib,
@@ -24,8 +22,6 @@
   ninja,
   fetchurl,
   fetchFromGitHub,
-  linkFarm,
-  writeTextFile,
   rocmPackages,
   python3,
   hipArchs ? [
@@ -33,7 +29,8 @@
     "gfx1151"
     "gfx1201"
   ],
-  model ? "IQ2_XS",
+  model,
+  mtp,
   prefillMmq ? true,
 }:
 let
@@ -89,272 +86,19 @@ let
     p.jsonschema
   ]);
 
-  # Python for the build-time tools (tools/iq_pack.py, tools/strata_tokenizer.py, tools/mtp_pack.py,
-  # tools/mtp_rt.py): numpy + the regex module, and the two third-party imports llama.cpp's gguf-py
-  # (above) pulls in (pyyaml, requests); gguf-py itself is found through STRATA_GGUF_PY.
-  toolsPython = python3.withPackages (p: [
-    p.numpy
-    p.regex
-    p.pyyaml
-    p.requests
-  ]);
-
-  # ---- the model: the package's payload ---------------------------------------------------------
-  # The model GGUF from Hugging Face, pinned to the repository revision setup.py's HF_REVISIONS names
-  # (the current `sha` of the repository; tools/mtp_fetch.py pins the same kind of revision for the
-  # checkpoint). Two families, and the shape of the payload differs between them:
-  #   qwen (the GSQ-RCO quants): two shards. Shard 1 is the model - dense tensors and the quantized
-  #     experts, whose size is the `model` parameter - which the engine mmap's (--native); the low-RAM
-  #     resident mode reads its experts through pack's experts.bin, which tools/iq_pack.py cuts from it
-  #     at build time. Shard 2 (26.8 GB) is the per-layer token-embedding table alone (one tensor),
-  #     byte-identical in every size so it is pinned once; it stays on disk, read as needed (--ple-gguf).
-  #   gyro (agentionai's trellis quants): one GGUF that carries the n-gram table inside it, hence the
-  #     smaller memory for a similar download. Its experts are Hadamard-folded, so its pack is marked v5
-  #     beside a hadamard.txt, which an engine that cannot rotate them refuses; the engine here is new
-  #     enough (setup.py's GYRO_ENGINE asks for 0.1.45.1). Its small projections are quantized too, so
-  #     its pack needs iq_pack.py's --compat-bf16, which is what setup.py passes for the family.
-  # The tokenizer is not a file in either repository: tools/strata_tokenizer.py derives it from shard 1's
-  # GGUF metadata (vocab, merges, chat template) into pack/tokenizer/ at build time.
-  families = {
-    qwen = {
-      repo = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF";
-      rev = "ed59f92082b1e93c0e96d60a8b11aab089b52f09"; # 2026-09-29
-      name = "qwen3.8-flash-next";
-      shards = 2;
-    };
-    gyro = {
-      repo = "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF";
-      rev = "1ada08422e404aca51ab9df665f089f34c419c6b"; # 2026-10-13
-      name = "qwen3.8-flash-next-gyro";
-      shards = 1;
-      packArgs = [ "--compat-bf16" ];
-    };
-  };
-  # The sizes the two repositories carry: shard 1's sha256 (its LFS oid), the memory setup.py's MODELS
-  # wants for it, and the download in GB. Gyro's is VRAM and RAM together, which is why it is smaller.
-  # Only the selected size is fetched.
-  models = {
-    Q2_0 = {
-      family = "qwen";
-      sha256 = "69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720";
-      ram = "48";
-      download = "66.4";
-    };
-    IQ2_XS = {
-      family = "qwen";
-      sha256 = "92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7";
-      ram = "48";
-      download = "68.0";
-    };
-    IQ3_XXS = {
-      family = "qwen";
-      sha256 = "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15";
-      ram = "60";
-      download = "75.8";
-    };
-    IQ3_S = {
-      family = "qwen";
-      sha256 = "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3";
-      ram = "62";
-      download = "83.6";
-    };
-    Gyro-S = {
-      family = "gyro";
-      file = "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf";
-      sha256 = "c6ea1b08ca312f99095b27588ba35976b53f948268e7f91e7761926aa01d9c87";
-      ram = "27.6";
-      download = "58.5";
-    };
-    Gyro-M = {
-      family = "gyro";
-      file = "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf";
-      sha256 = "7aa36d15131d255179ab6c87fa9c9f81a0b541fc9e81e959d4c3e29eb20feb5f";
-      ram = "35";
-      download = "92.0";
-    };
-  };
-  modelNames = builtins.attrNames models;
-  modelEntry =
-    models.${model} or (throw "model ${model} is not one of ${lib.concatStringsSep ", " modelNames}");
-  fam = families.${modelEntry.family};
-  # The published names: the GSQ-RCO shards are split and carry the size, a Gyro file is named for its
-  # size alone. The GSQ-RCO shards live under a folder named for the size, the Gyro files at the root.
-  shardName =
-    i:
-    if fam.shards == 2 then
-      "Qwen3.8-Flash-Next-GSQ-RCO-${model}-0000${toString i}-of-00002.gguf"
-    else
-      modelEntry.file;
-  hfShard =
-    name: sha256:
-    fetchurl {
-      url = "https://huggingface.co/${fam.repo}/resolve/${fam.rev}/${
-        if fam.shards == 2 then "${model}/" else ""
-      }${name}";
-      inherit sha256;
-    };
-  s1 = shardName 1;
-  s2 = if fam.shards == 2 then shardName 2 else null;
-  modelS1 = hfShard s1 modelEntry.sha256;
-  # the shard the engine reads the n-gram table from: shard 2 for the split files, the one file for Gyro
-  modelS2 =
-    if s2 == null then
-      modelS1
-    else
-      hfShard s2 "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113";
-  pleName = if s2 == null then s1 else s2;
-  # the pack directory and the pack derivation's name: the size lowercased without underscores (iq2xs,
-  # iq3xxs, iq3s), so each size caches its own pack
-  packName = lib.replaceStrings [ "_" ] [ "" ] (lib.toLower model);
-  # extra iq_pack.py flags the family needs (Gyro's small projections are quantized, so its pack is
-  # marked v5 and its dense tensors are BF16-compatible)
-  packArgs = lib.concatStringsSep " " (fam.packArgs or [ ]);
-  # how setup.py's MODELS describes what the size needs: RAM for its experts in the split files, GPU and
-  # system RAM together for a Gyro file, which carries its own n-gram table
-  memoryNote =
-    if fam.shards == 2 then
-      "its experts want ~${modelEntry.ram} GB of RAM"
-    else
-      "its experts and n-gram table together want ~${modelEntry.ram} GB of GPU plus system RAM";
-
-  # ---- the vision encoder: the model's mmproj (the vision encoder + projector, 0.9 GB) ---------------
-  # The same repository and the same pinned revision as the shards: setup.py's FAMILIES entry for this
-  # model names this file, and it is shared by the Coder and Unsloth releases too. strata-vision (built
-  # below from tools/vision) reads it with llama.cpp's mtmd; the engine places the rows it produces at the
-  # prompt's image pad tokens.
-  mmprojName = "mmproj-Qwen3.8-Flash-Next-BF16.gguf";
-  mmproj = fetchurl {
-    url = "https://huggingface.co/${families.qwen.repo}/resolve/${families.qwen.rev}/${mmprojName}";
-    sha256 = "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0";
-  };
-
-  # ---- the MTP draft layer's source: 28 shards of the original BF16 checkpoint -----------------
-  # The GGUF above ships no MTP head; the checkpoint (Qwen/Qwen3.8-Flash-Next, 360 GB in 131 shards)
-  # does: 31 `mtp.*` tensors (~5 GB) scattered over 28 of the shards. Those 28 shards (55.17 GB) and
-  # the checkpoint's index file are fetched as store paths, pinned to the repository's revision of
-  # 2026-09-30 (the current `sha`) by their LFS sha256; the build then extracts only the MTP byte
-  # ranges from the local files (mtpLocal, below) and checks every tensor against the SHA256 table
-  # tools/mtp_fetch.py pins for that revision (#327) - the original range-fetching implementation,
-  # whose table stays the single source of truth for the pins. No network in the build.
-  qwenRev = "de4b8e4d43b917e7706784d8bb445c9af86a3540";
-  qwen =
-    name: sha256:
-    fetchurl {
-      url = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/${qwenRev}/${name}";
-      inherit sha256;
-    };
-  qwenIndex = qwen "model.safetensors.index.json" "99e815241ef03325536b0aaa4441deea45174c17fae31e10f0bb456410c590de";
-  mtpShards = [
-    (qwen "model-00037-of-00131.safetensors" "73b53c94d23589bdfde55b20538a515525f22fd37c7cdf24e85738ed771218e1")
-    (qwen "model-00041-of-00131.safetensors" "0465251c296b1a6aa014480e54f0f23ce6899bca72ba2be4804cd9187095cc7c")
-    (qwen "model-00043-of-00131.safetensors" "a88f0411382143c6eb5ddeed84280a80f18f18d94670bda54cee1c1cd47cd824")
-    (qwen "model-00047-of-00131.safetensors" "eb79852b4266e63fc7050e79349ece1eb3160eedb13bdb5f39b4c768e0741a4f")
-    (qwen "model-00049-of-00131.safetensors" "cbab68ff417bf8905ccfa1697deb5c6b42ae9ee9bf6cbb0ebe687e116e5e6da8")
-    (qwen "model-00053-of-00131.safetensors" "1bf2bbe69b64fc9ac33c264490445a0b42a3488c6b87722d918c3d3abe6bbeab")
-    (qwen "model-00057-of-00131.safetensors" "77ec2297055779ab6dc6e15e3a88837b888e13ce199543f12a40a5036e5b8a4a")
-    (qwen "model-00060-of-00131.safetensors" "8fd21925cb11bc7cf68d7c5cab498f3c13f455aed32e8c5ac90cda92c6961487")
-    (qwen "model-00062-of-00131.safetensors" "e62ba3c6e2e9e213b6aa0534498bb341e89b86ce388347a8421ccff0d5887f0a")
-    (qwen "model-00066-of-00131.safetensors" "550a89f69aa7d57e58f344ac06e7ea0ef471813eb16a6adb95373339df895f6c")
-    (qwen "model-00070-of-00131.safetensors" "9644884762cc198d27a2a4d1078702fa4744ad8ff272afc565568fc8e04c6f59")
-    (qwen "model-00072-of-00131.safetensors" "2415f75c86da428daf68924f98f1bb159b0a589a9571f0d690f8a27ce4839689")
-    (qwen "model-00076-of-00131.safetensors" "14860603fb56ceaf4748a819ca0e561c685ad1e2182d91cc32170a8b1cddcb9e")
-    (qwen "model-00078-of-00131.safetensors" "e9ac55c3032056303f9f8cce6b0f486e0bfedad2258a384eff6531e973cd7220")
-    (qwen "model-00082-of-00131.safetensors" "0fe8d836b886ac8942f74e835e17487f53454e96bf38263d45fb329006dde7a9")
-    (qwen "model-00086-of-00131.safetensors" "757b82b98441356169d5030ac338d3a7d55fadc332c3f4c396fba795ac64d810")
-    (qwen "model-00088-of-00131.safetensors" "2feec63478c327f8436222d0df2b1f1cdd65947704cc5bab0ae891122ed3656f")
-    (qwen "model-00090-of-00131.safetensors" "af53d439e4e26865b7cfda192ef46a29762f3c49b1fe8e06b54adee132b80880")
-    (qwen "model-00094-of-00131.safetensors" "c31221b8e6a5df3151c85e24fd1c8e0693af21fed7814d2804de032e8566e4b3")
-    (qwen "model-00100-of-00131.safetensors" "78da7091e9a36803c4ccd1c10fa6dc0f61b65ad7e70c314722c0582a94c619f2")
-    (qwen "model-00102-of-00131.safetensors" "6caf691248517c088adb462caef16a7c5bbcdad796ceb2fee4c3cb575a86e8e1")
-    (qwen "model-00106-of-00131.safetensors" "2903f5b2c539142163c7157fd191d8799019dbfe3a5ab2560276546b9b0fa44e")
-    (qwen "model-00108-of-00131.safetensors" "426251e0773e900de9a227db60fd8c05ee7f25b8d514458b7a8b37028f6d90ac")
-    (qwen "model-00112-of-00131.safetensors" "90d2e46457dd629a0ebab7d3f4c36de7a0613518fcd3ba6e6a0143d9c24ae04f")
-    (qwen "model-00114-of-00131.safetensors" "b8d004974b91dad16757c9ad6be6682756e17843c7026e441f2a075de33ab4f5")
-    (qwen "model-00118-of-00131.safetensors" "ffe5cc04b3c2bdfeaba652267ecce7f9ded512646840effe6dd1908f65a299b4")
-    (qwen "model-00120-of-00131.safetensors" "6a13f7374f7998ce5413fd1a94a2796f10a389ac4ba0da073e80fa91eca1b40e")
-    (qwen "model-00124-of-00131.safetensors" "bf22358402faf83962759e05b13480151b138d03203d30f04524f8d53e498c7c")
-  ];
-
-  # stdenv `source`s every bare file in buildInputs (its "setup hook" mechanism), so the model, MTP and
-  # vision payloads enter the build as linkFarm directories of symlinks instead (directories are never
-  # sourced). The interpolation into linkFarm's script is what makes the 124 GB of store paths
-  # dependencies of this derivation, and the build sandbox resolves the links through to them.
-  mtpData = linkFarm "mtp-data" (
-    [
-      {
-        name = "model.safetensors.index.json";
-        path = qwenIndex;
-      }
-    ]
-    ++ lib.map (s: {
-      name = s.name;
-      path = s;
-    }) mtpShards
-  );
-  modelData = linkFarm "strata-model-${model}" (
-    [
-      {
-        name = s1;
-        path = modelS1;
-      }
-    ]
-    ++ lib.optionals (s2 != null) [
-      {
-        name = s2;
-        path = modelS2;
-      }
-    ]
-  );
-  visionData = linkFarm "strata-mmproj" [
-    {
-      name = mmprojName;
-      path = mmproj;
-    }
-  ];
-
-  # The build-time extractor: the same layout tools/mtp_fetch.py fetch writes (tensors/<name>.bin
-  # plus mtp-manifest.json), read from the local pinned shards instead of HTTP ranges, so
-  # tools/mtp_pack.py and tools/mtp_rt.py run unchanged. Stdlib only.
-  mtpLocal = writeTextFile {
-    name = "mtp-local-extract";
-    text = ''
-      import hashlib, json, os, struct, sys
-      index_path, out, shard_paths, tools_dir = sys.argv[1:5]
-      sys.path.insert(0, tools_dir)
-      import mtp_fetch                                   # for its pinned SHA256 table (#327)
-      weight_map = json.load(open(index_path, encoding="utf-8"))["weight_map"]
-      want = {k: v for k, v in weight_map.items() if k.startswith("mtp.")}
-      by_name = {os.path.basename(p): p for p in shard_paths.split()}
-      os.makedirs(os.path.join(out, "tensors"), exist_ok=True)
-      manifest = []
-      for name in sorted(want):
-          shard = want[name]
-          path = by_name.get(shard)
-          if path is None:
-              sys.exit("tensor %s: its shard %s is not among the pinned fetchurl inputs" % (name, shard))
-          f = open(path, "rb")
-          n = struct.unpack("<Q", f.read(8))[0]
-          meta = json.loads(f.read(n))[name]
-          a, b = meta["data_offsets"]
-          f.seek(8 + n + a)
-          data = f.read(b - a)
-          f.close()
-          digest = hashlib.sha256(data).hexdigest()
-          want_hash = mtp_fetch.SHA256.get(name)
-          if want_hash is not None and digest != want_hash:
-              sys.exit("%s: sha256 %s is not the pinned %s" % (name, digest, want_hash))
-          rel = "tensors/%s.bin" % name
-          with open(os.path.join(out, rel), "wb") as o:
-              o.write(data)
-          manifest.append(dict(name=name, shard=shard, dtype=meta["dtype"], shape=meta["shape"],
-                               start=8 + n + a, end=8 + n + b - 1, bytes=b - a,
-                               file=rel, sha256=digest))
-          print(name, b - a, flush=True)
-      with open(os.path.join(out, "mtp-manifest.json"), "w", encoding="utf-8") as o:
-          json.dump(manifest, o, indent=1)
-      print("%d MTP tensors, %.3f GB" % (len(manifest), sum(r["bytes"] for r in manifest) / 1e9))
-    '';
-  };
+  # ---- the payload: the model package and the MTP draft layer --------------------------------
+  # Both are packages of their own, passed in as arguments: strata-model-<size> carries the GGUF shards, the
+  # pack cut from them with the tokenizer derived from their metadata, and the family's image encoder;
+  # strata-mtp carries the draft layer. Neither reads this package's source, so a Strata release rebuilds the
+  # engine and the two picture readers alone - the ~67 GB of pack work and the ~55 GB of checkpoint extract
+  # stay cached, and so does everything when only the model size changes.
+  #
+  # What the assembly needs is the model package's passthru.strata: the size, the pack name, the published
+  # file names, the model_name the API reports, the memory the size wants, and the first engine version that
+  # can read its pack.
+  m =
+    model.passthru.strata
+    or (throw "the model passed to the Strata package must be one of the strata-model-* packages: it carries no passthru.strata, so the assembly cannot name its shards, its pack or its image encoder");
 
   # nixpkgs has no single /opt/rocm prefix: each package is its own store path, and CMake's
   # find_package(... CONFIG) finds the configs against them through CMAKE_PREFIX_PATH. What each is for:
@@ -507,50 +251,11 @@ let
     propagatedBuildInputs = visionHipLibs;
   };
 
-  # ---- the pack: the pinned shards and the tools scripts, nothing else, one derivation per size. The
-  # tools run from the read-only store path, so they must not leave a __pycache__ there.
-  pack =
-    runCommand "strata-pack-${packName}"
-      {
-        nativeBuildInputs = [ toolsPython ];
-        buildInputs = [ modelData ];
-        env.STRATA_GGUF_PY = "${llamaCpp}/gguf-py";
-        env.PYTHONDONTWRITEBYTECODE = "1";
-      }
-      ''
-        # tools/iq_pack.py reads every shard beside --gguf (the shards keep their original names), derives
-        # the tokenizer from the GGUF metadata (tools/strata_tokenizer.py: vocab, merges, the chat template
-        # into tokenizer/), and writes index.txt / dense.bin / native_experts.txt / experts.bin (the quantized
-        # experts the low-RAM resident mode reads at run time: 35.5 GB at IQ2_XS, 42.9 at IQ3_XXS, 50.3 at IQ3_S).
-        ${toolsPython}/bin/python3 ${src}/tools/iq_pack.py \
-          --gguf ${modelData}/${s1} --out $out --experts-bin ${packArgs}
-      '';
-
-  # ---- the MTP draft layer: the pinned checkpoint shards and the tools scripts, nothing else
-  mtp =
-    runCommand "strata-mtp-rt"
-      {
-        nativeBuildInputs = [ toolsPython ];
-        buildInputs = [ mtpData ];
-        env.STRATA_GGUF_PY = "${llamaCpp}/gguf-py";
-        env.PYTHONDONTWRITEBYTECODE = "1";
-      }
-      ''
-        # the ~5 GB of MTP tensors out of the 28 pinned checkpoint shards, every tensor checked against
-        # tools/mtp_fetch.py's pinned SHA256 table, then packed Q2_0 and relaid out for the engine
-        ${toolsPython}/bin/python3 ${mtpLocal} \
-          ${mtpData}/model.safetensors.index.json $TMPDIR/mtp \
-          "$(ls ${mtpData}/model-00*.safetensors)" ${src}/tools
-        ${toolsPython}/bin/python3 ${src}/tools/mtp_pack.py --src $TMPDIR/mtp --experts q2_0 \
-          --out $TMPDIR/mtp/mtp-q2_0.gguf
-        ${toolsPython}/bin/python3 ${src}/tools/mtp_rt.py --gguf $TMPDIR/mtp/mtp-q2_0.gguf --out $out
-        cp ${src}/data/draft_vocab.bin $out/draft_vocab.bin
-      '';
 in
-runCommand "strata-${model}-${version}"
+runCommand "strata-${m.size}-${version}"
   {
     meta = with lib; {
-      description = "The Strata inference engine (HIP for ${archString}), its Python server and its image encoder, with the ${model} model (~${modelEntry.download} GB), its derived tokenizer, the MTP draft layer (28 pinned checkpoint shards, ~55 GB) and the mmproj vision encoder (~0.9 GB): the assembly of the stage derivations above, whose closure is the whole package";
+      description = "The Strata inference engine (HIP for ${archString}), its Python server and its image encoders, with the ${m.size} model (~${m.download} GB), its derived tokenizer, the MTP draft layer (28 pinned checkpoint shards, ~55 GB) and the mmproj vision encoder (~0.9 GB): the assembly of the stage derivations above and the model and draft-layer packages, whose closure is the whole package";
       homepage = "https://github.com/Niko1221/Strata";
       license = licenses.mit;
       platforms = [ "x86_64-linux" ];
@@ -563,6 +268,7 @@ runCommand "strata-${model}-${version}"
       engine = engine;
       vision = visionBin;
       visionHip = visionHipBin;
+      inherit model mtp;
     };
   }
   ''
@@ -575,9 +281,9 @@ runCommand "strata-${model}-${version}"
     # dashboards (strata_cli/dashboard.py and friends) want rich/textual, and the server never imports
     # those, so the Python environment stays the five packages above.
     cp -a ${src}/strata_control ${src}/strata_cli $out/
-    ln -s ${modelData} $out/models/${model}
-    ln -s ${visionData} $out/vision
-    ln -s ${pack} $out/pack/${packName}
+    ln -s ${model}/shards $out/models/${m.size}
+    ln -s ${model}/mmproj $out/vision
+    ln -s ${model}/pack $out/pack/${m.packName}
     ln -s ${mtp} $out/mtp/rt
     cp ${src}/data/expert-profile.bin $out/data/
     ln -s ${engine}/bin/strata $out/bin/strata
@@ -587,8 +293,8 @@ runCommand "strata-${model}-${version}"
 
     # the config shape setup.py writes (exe, args, cwd, tokenizer, model_name), filled for this
     # machine: the low-RAM resident mode - the experts the GPU does not hold live in RAM, the PLE n-gram
-    # table stays on disk, and the KV cache is int8 at the full 131072-token context. The size here is
-    # ${model}: ${memoryNote} (setup.py's MODELS), so this is the config for a PC with that much memory
+    # table stays on disk, and the KV cache is int8 at the full 131072-token context. The model here is
+    # ${m.size}: ${m.memoryNote} (setup.py's MODELS), so this is the config for a PC with that much memory
     # plus a 32 GB card.
     # Images need both halves, as setup.py writes them: the "vision" section makes the server spawn the
     # encoder (chat.py's /image, OpenAI image_url parts, Anthropic image blocks), and "--vision" in args is
@@ -622,7 +328,7 @@ runCommand "strata-${model}-${version}"
       ],
       "cwd": "@OUT@",
       "tokenizer": "@OUT@/pack/@PACK@/tokenizer",
-      "model_name": "@FAM_NAME@-@MODEL_LOWER@",
+      "model_name": "@MODEL_NAME@",
       "backend": "hip",
       "env": { "STRATA_RESIDENT_PIN": "0" },
       "vision": {
@@ -635,19 +341,26 @@ runCommand "strata-${model}-${version}"
       }
     }
     EOF
-    sed -i -e "s|@OUT@|$out|" -e "s|@MODEL@|${model}|" -e "s|@PACK@|${packName}|" -e "s|@MODEL_LOWER@|${lib.toLower model}|" -e "s|@FAM_NAME@|${fam.name}|" -e "s|@S1@|${s1}|" -e "s|@PLE@|${pleName}|" -e "s|@MMPROJ@|${mmprojName}|" $out/etc/strata/strata.json
+    sed -i -e "s|@OUT@|$out|" -e "s|@MODEL@|${m.size}|" -e "s|@PACK@|${m.packName}|" -e "s|@MODEL_NAME@|${m.modelName}|" -e "s|@S1@|${m.shard1}|" -e "s|@PLE@|${m.ple}|" -e "s|@MMPROJ@|${m.mmprojName}|" $out/etc/strata/strata.json
     # the metadata setup.py's installer records and the server reads from beside the engine. "version" is
     # the engine's own number, read out of the source it was built from rather than the package's version,
     # because the two move apart: this release is tagged v0.2.1 and its engine is 0.1.46. The vision
     # keys are what setup.py writes for a HIP engine with a GPU reader, and the server uses vision_archs to
     # decide whether the GPU reader covers the card it found (strata_control/vision_reader.py).
     engineVersion=$(sed -n 's/^[[:space:]]*project(strata VERSION \([0-9.]*\).*/\1/p' ${src}/CMakeLists.txt | head -1)
+    # setup.py refuses an engine older than the model's minimum before it writes a config; the same check here
+    # fails the build instead of shipping an engine that reads the pack as noise (a Gyro pack is v5 with
+    # Hadamard-folded experts, which an older engine cannot rotate).
+    if [ "$(printf '%s\n%s\n' "$engineVersion" "${m.minEngine}" | sort -V | head -1)" != "${m.minEngine}" ]; then
+      echo "the engine is $engineVersion but the ${m.size} pack needs at least ${m.minEngine}" >&2
+      exit 1
+    fi
     cat > $out/bin/BUILD.json <<'EOF'
     {
       "version": "@ENGINE_VERSION@",
       "backend": "hip",
       "archs": [${lib.concatStringsSep ", " (map (a: "\"${a}\"") archList)}],
-      "model": "${model}",
+      "model": "${m.size}",
       "vision": "gpu",
       "vision_archs": [${lib.concatStringsSep ", " (map (a: "\"${a}\"") archList)}],
       "vision_gpu": "strata-vision-hip",

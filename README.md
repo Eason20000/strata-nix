@@ -15,10 +15,15 @@ is hash-pinned, so the build is reproducible and needs no network at configure t
 
 ## Models
 
-`model` is a `callPackage` parameter, default `IQ2_XS`; the flake also exposes each other size as its own
-output (`nix build .#strata-iq3-s`, `.#strata-gyro-s`).
+Each size is a package of its own (`pkgs/by-name/st/strata-model-<size>/`, exposed as
+`packages.x86_64-linux.strata-model-<size>`): its GGUF shards, the pack and tokenizer cut from them, and the
+image encoder the family shares. The engine package is assembled over one of them, and so is the service:
+`services.strata.model = strata-nix.packages.x86_64-linux.strata-model-iq3-s`. The default everywhere is
+`IQ2_XS`: `packages.strata` is assembled over it, and so is the service unless you set
+`services.strata.model`. `nix build .#strata-model-iq3-s` builds that payload alone — its
+downloads and the pack — without the engine, which is how to warm the cache before switching a machine over.
 
-| `model` | download | memory | notes |
+| size | download | memory | notes |
 | --- | --- | --- | --- |
 | `Q2_0` | 66.4 GB | 48 GB RAM | 2-bit, the fastest |
 | `IQ2_XS` | 68.0 GB | 48 GB RAM | 2-bit i-quant, a little better quality, close in speed |
@@ -39,24 +44,35 @@ nix build .#strata            # ~2 minutes of compile on a 16-core PC (downloads
 nix run .#strata -- --help    # the engine's usage, from the store
 ```
 
+The model files carry the Qwen Community License, so the model and draft-layer packages say so in their
+meta and nixpkgs refuses to evaluate them unless unfree packages are allowed. This flake allows it for
+itself; a configuration that builds these packages on its own needs `nixpkgs.config.allowUnfree = true`.
+The engine, the two picture readers and the tools pin are MIT.
+
 The caller-visible knobs are `callPackage` parameters of
 `pkgs/by-name/st/strata/package.nix`:
 
 ```sh
 # the flake's locked nixpkgs, not <nixpkgs>: another nixpkgs means another ROCm and hipBLASLt, and a
 # tuning table is valid for one hipBLASLt version only
-nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = import f.inputs.nixpkgs { system = "x86_64-linux"; }; in pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = "IQ3_S"; prefillMmq = false; }'
+nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = import f.inputs.nixpkgs { system = "x86_64-linux"; config.allowUnfree = true; }; p = f.packages.x86_64-linux; in pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = p.strata-model-iq3-s; mtp = p.strata-mtp; prefillMmq = false; }'
 ```
 
 - `hipArchs` (default `[ "gfx1100" "gfx1151" "gfx1201" ]`) — the HIP target list, validated by the
   source's own `cmake/hip_backend.cmake`
-- `model` (default `IQ2_XS`) — one of the sizes above
+- `model` — a model package, one of `strata-model-{iq2-xs,q2-0,iq3-xxs,iq3-s,gyro-s,gyro-m}`
+- `mtp` — the MTP draft-layer package (`strata-mtp`), size-independent
 - `prefillMmq` (default `true`) — the GGML MMQ prompt path (`-DSTRATA_PREFILL_MMQ`)
 
-All three are recorded in the package's `bin/BUILD.json`.
+`hipArchs` and `prefillMmq` are recorded in the package's `bin/BUILD.json`, which also carries the size the
+assembly was built over.
 
 The compile stages are `passthru` outputs, so a version bump can be checked without the ~120 GB of model
-downloads: `nix build .#strata.passthru.engine`, `.passthru.vision` and `.passthru.visionHip`.
+downloads: `nix build .#strata.passthru.engine`, `.passthru.vision` and `.passthru.visionHip`. They are also
+the only things a version bump rebuilds: the packs and the draft layer run a separately pinned tools tree
+(`strata-tools`), so a Strata release that leaves `tools/iq_pack.py` and `tools/mtp_*.py` alone costs the
+~67 GB of pack work and the ~55 GB of checkpoint extract nothing. Move the tools pin only when those files
+change.
 
 ## Run
 
@@ -110,7 +126,7 @@ not cover. To try a table of your own, set `STRATA_HIPBLASLT_TUNING` to its path
 
 ```nix
 {
-  inputs.strata-nix.url = "github:<you>/strata-nix";
+  inputs.strata-nix.url = "github:ShadowApex/strata-nix";
   outputs = { self, nixpkgs, strata-nix }: {
     nixosConfigurations.mymachine = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
@@ -119,7 +135,7 @@ not cover. To try a table of your own, set `STRATA_HIPBLASLT_TUNING` to its path
         {
           services.strata.enable = true;
           services.strata.hipArchs = [ "gfx1100" "gfx1151" "gfx1201" ];   # the card in the machine
-          services.strata.model = "IQ3_S";                                # one of the sizes above
+          services.strata.model = strata-nix.packages.x86_64-linux.strata-model-iq3-s;
           services.strata.apiKey = "a long random secret";                # or null + environment.STRATA_API_KEY
         };
       ];
@@ -130,10 +146,11 @@ not cover. To try a table of your own, set `STRATA_HIPBLASLT_TUNING` to its path
 
 The unit runs as the `strata` user with the `render` and `video` groups, keeps `/dev/kfd` and `/dev/dri`
 visible, allows unlimited memlock, and has no start timeout (loading the model takes minutes). Its working
-directory is `/var/lib/strata`, the only writable place. `services.strata.package` takes any package
-instead, such as `packages.strata-iq3-s`, and `services.strata.maxContext` sets the context window (the
-package's 131072 by default) — past the model's trained 262144 it adds yarn rope scaling, as `setup.py`
-does.
+directory is `/var/lib/strata`, the only writable place. `services.strata.package` takes any assembled
+package instead, such as `packages.strata`; `services.strata.model` and `services.strata.mtp` are packages
+too, and only build the default one, so switching size keeps the engine and the picture readers cached.
+`services.strata.maxContext` sets the context window (the package's 131072 by default) — past the model's
+trained 262144 it adds yarn rope scaling, as `setup.py` does.
 
 Three of the engine's v0.2.0 performance switches are typed options, and they write engine environment
 variables into the generated config: `services.strata.hipWmma` (matrix-core attention on the prompt path —
