@@ -1,12 +1,12 @@
 {
-  description = "Strata: an OpenAI- and Anthropic-compatible model server on one AMD GPU plus system RAM (Linux, ROCm from nixpkgs); the engine package is assembled over a model package (six sizes: the GSQ-RCO quants and the Gyro trellis quants) and an MTP draft-layer package, every download a pinned fetchurl";
+  description = "Strata: an OpenAI- and Anthropic-compatible model server on one AMD GPU plus system RAM (Linux, ROCm from nixpkgs); the engine package is assembled over a model package (ten sizes: the GSQ-RCO quants, the Gyro trellis quants, and the DeepSeek-V4.1-Flash sets) and an MTP draft-layer package, every download a pinned fetchurl";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     # the project source is not an input: the packages fetch it themselves with pkgs.fetchFromGitHub,
-    # pinned to the v0.2.3.1 tag (the `version` in the engine package; the separate tools pin in
-    # pkgs/by-name/st/strata-tools/ moves only when the packing tools change). To track main or bump the
-    # version, change those fetches.
+    # pinned to the v0.2.4.2 tag (the `version` in the engine package; the separate tools pins in
+    # pkgs/by-name/st/strata-tools/ and pkgs/by-name/st/strata-dsv41-tools/ move only when the files their
+    # packs run change). To track main or bump the version, change those fetches.
   };
 
   outputs =

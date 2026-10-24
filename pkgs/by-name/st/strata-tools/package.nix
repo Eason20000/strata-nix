@@ -15,13 +15,18 @@
   fetchFromGitHub,
 }:
 let
-  # The tag these tools are taken from: the last release that changed the packing tools. It is not the
-  # engine's version and does not move with it - v0.2.3 left every file below byte-identical except
+  # The tag these tools are taken from: the last release that changed what a Qwen or Gyro pack actually
+  # reads. It is not the engine's version and does not move with it - v0.2.3 left every file below
+  # byte-identical except
   # mtp_fetch.py, which gained strata_control.tls.install() (#3722) for the HTTPS range fetches it does at
   # install time. The build never downloads through it (strata-mtp reads the pinned shards and uses only the
   # SHA256 table), and strata_control/ is not in this pruned tree, so importing the v0.2.3 file would fail:
   # the pin stays where v0.2.1.4 put it and the pack and extract caches survive the release. Moving it later
-  # means copying strata_control/tls.py into this tree beside tools/.
+  # means copying strata_control/tls.py into this tree beside tools/. v0.2.4 touched
+  # strata_tokenizer.py, which the Flash-Next pack does run, but what it added is the deepseek-v3
+  # pre-tokenizer sequence - a branch taken only for a GGUF whose pre-tokenizer name starts with "deepseek".
+  # A Qwen or Gyro GGUF gets QWEN35_PATTERN from either version, so the packs would be byte-identical and the
+  # pin stays put.
   version = "0.2.1.4";
   src = fetchFromGitHub {
     owner = "Niko1221";

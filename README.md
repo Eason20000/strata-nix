@@ -212,7 +212,8 @@ null keeps the server's own 900 s for the smaller models), `services.strata.keep
 conversation aside at its checkpoints and takes it back, so an agent that comes back to a conversation does not
 pay for its prompt again — and `services.strata.autoPinSystemPrompt`, which keeps the system prompt of a
 conversation resident so the next one starts from it. All three default to what `serve/server.py` defaults to
-(off, 2 GB, off), and the slot folder is `ds4-slots` under `services.strata.stateDir`: the engine's own default
+(on, 2 GB, on since v0.2.4.2 — v0.2.4 wrote off for both conversation switches), and the slot folder is
+`ds4-slots` under `services.strata.stateDir`: the engine's own default
 is beside the pack, and `$out/pack` is a read-only symlink into the model package. `services.strata.maxContext`
 is the only context knob there — `strata-dsv41` has no rope-scaling flag, and a yarn scaling a Flash-Next config
 would get past the model's trained length is not written for a DeepSeek one.

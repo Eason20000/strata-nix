@@ -35,7 +35,7 @@ pkgs/by-name/st/strata/            # the engine and its assembly, in nixpkgs' by
   package.nix                      # the source pin, the build, and the config the server reads; hipArchs, model, mtp and prefillMmq are its parameters
   llama.cpp.nix                    # pinned llama.cpp, source-only store path, used as -DSTRATA_GGML_DIR and for gguf-py
 pkgs/by-name/st/strata-tools/      # the pinned Strata tools tree the Flash-Next and Gyro pack and the draft-layer extract run, at its own rev
-pkgs/by-name/st/strata-dsv41-tools/# the same at 0.2.4, pruned to tools/dsv41 (pack_gguf.py and strata_tokenizer.py): the DeepSeek packs
+pkgs/by-name/st/strata-dsv41-tools/  # the same at 0.2.4.2, pruned to tools/dsv41 (pack_gguf.py and strata_tokenizer.py): the DeepSeek packs
 pkgs/by-name/st/strata-mtp/        # the MTP draft layer: the pinned checkpoint shards plus the extract
 pkgs/by-name/st/strata-model-<size>/  # one per size (iq2-xs, q2-0, iq3-xxs, iq3-s, gyro-s, gyro-m, ds4-iq1-m, ds4-iq2-xxs, ds4-iq2-xs, ds4-ud-q8-k-xl): its GGUF files, its pack/tokenizer, its family mmproj
 modules/services/strata.nix        # the services.strata NixOS module (the service as a systemd unit)
@@ -76,15 +76,18 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `fetchFromGitHub`, pinned to the tag matching `version`. A flake input named
   `strata` once shadowed the derivation built from it inside its own definition
   and recursed; do not reintroduce one.
-- The tag and the engine's version are different numbers: v0.2.4 builds engine 0.1.49, and
+- The tag and the engine's version are different numbers: v0.2.4 built engine 0.1.49 and v0.2.4.2 builds
+  0.1.49.2, and
   `bin/BUILD.json` carries the engine's, which the assembly reads out of `CMakeLists.txt`'s
   `project(strata VERSION ...)` rather than hardcoding it. The server reads that file as the engine's
   version, and `setup.py` compares it against per-model minimums (`GYRO_ENGINE` and friends), so a
   hardcoded package version there would be wrong. setup.py reads up to four components, so the
   four-part number a Control-only hotfix stamps (v0.2.4.1 is engine 0.1.49.1 over engine sources only
   the Terminal package was missing files from) compares correctly against a three-part minimum.
-  The packages pin the tag, not the newest tag: pin v0.2.4.1 only when a hotfix touches something this
-  build copies.
+  The packages pin the tag, not the newest tag: pin a hotfix only when it touches something this
+  build copies. v0.2.4.1 touched only the Terminal's setup scripts, so the pin stayed at v0.2.4; v0.2.4.2
+  touches `src/dsv41/ds4_gg_cpu.cpp` and the ggml-cpu feature flags (see the BMI2 note below), two of
+  `serve/server.py`'s DeepSeek conversation defaults, and `tools/dsv41/pack_gguf.py`, so it is pinned.
 - Payloads enter the build as `linkFarm` directories, never as bare files in
   `buildInputs`: stdenv `source`s every bare file there as a setup hook.
 - `configurePhase = "true"` is deliberate. stdenv's default configure would run
@@ -98,29 +101,42 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   every engine release even when the script is byte-identical. Bumping `version` in the engine package leaves
   the model drvPaths, the pack drvPath and the mtp drvPath byte-identical; only the engine, both readers
   and the assembly change. There are two tools pins because the two model lines pack with different files:
-  `strata-tools` (0.2.4) carries `tools/iq_pack.py`, `tools/gguf_reader.py`, `tools/_paths.py`, `tools/mtp_*`
+  `strata-tools` (0.2.1.4) carries `tools/iq_pack.py`, `tools/gguf_reader.py`, `tools/_paths.py`, `tools/mtp_*`
   and `tools/strata_tokenizer.py` for the Flash-Next and Gyro packs and the checkpoint extract,
-  `strata-dsv41-tools` (0.2.4) carries `tools/dsv41/pack_gguf.py`, `tools/dsv41/_paths.py` and
+  `strata-dsv41-tools` (0.2.4.2) carries `tools/dsv41/pack_gguf.py`, `tools/dsv41/_paths.py` and
   `tools/strata_tokenizer.py` for the DeepSeek packs, which need no numpy. Move a pin only when the files its
   packs run change: v0.2.3 touched `tools/mtp_fetch.py` alone (OS certificates for its HTTPS fetch, #3722),
   which this build never runs over the network, so that pin stayed at 0.2.1.4 through two releases; v0.2.4
-  added the `deepseek-v3` pre-tokenizer regex list to `tools/strata_tokenizer.py`, which the Flash-Next pack
-  runs too, so both pins moved to 0.2.4 and every pack re-ran. Moving the first pin further means copying
-  `strata_control/tls.py` into that tree, because `strata_tokenizer.py` does not import it but the server does.
+  added the `deepseek-v3` pre-tokenizer sequence to `tools/strata_tokenizer.py`, which the Flash-Next pack
+  runs too, so it is a file the first pin holds — but that branch only fires for a GGUF whose pre-tokenizer
+  name starts with `deepseek`, so a Qwen pack takes the same `QWEN35_PATTERN` either way and the pin stayed
+  at 0.2.1.4, which keeps those packs and the checkpoint extract cached. Moving it anyway re-runs every
+  Flash-Next and Gyro pack over ~67 GB and the ~55 GB extract for output that is byte-identical. Moving the
+  first pin further also means copying `strata_control/tls.py` into that tree, because `strata_tokenizer.py`
+  does not import it but the server does. v0.2.4.2 changed `tools/dsv41/pack_gguf.py` — its automatic mmproj
+  find now takes only a file whose projector is `deepseek41v` (#3927) — and that is the tool the second pin
+  holds, so it moved even though this build names no mmproj and the shard farms hold none, so the packs it
+  produces are the ones 0.2.4 produced. That move costs a full read of every DeepSeek set.
 - Since v0.2.4 the engine derivation builds two binaries: `strata` and `strata-dsv41`
   (`-DSTRATA_BUILD_DSV41=ON`, which upstream leaves OFF). Always build it — the assembly links it for every
   size, and a DeepSeek config runs it. Its vendored kernels link hipBLAS, and nixpkgs splits that header
-  into `hipblas-common`: pass `-DCMAKE_HIP_COMPILER_FLAGS=-I<hipblas-common>/include -include <src>/include/strata/dsv41/hip_extra.h`
-  (`hipExtraFlags`). Without the include, clang looks in `/opt/rocm` while compiling; without the forced
-  include, `hipblas/hipblas.h` itself fails the same way, and forcing it at configure is not enough because
-  the kernels are `add_library(... OBJECT)` sources CMake compiles directly. `hipblas-common` is a
-  `nativeBuildInputs` entry only: it is header-only, and putting it in `rocmLibs` would grow every binary's
-  RPATH for nothing.
-- The DeepSeek engine wants the CPU kernel flags to name a target, not the host: `ROCM_PLATFORM_ARGS` is
-  `-mavx512vpopcntdq;-mbmi2` here, the list the source's own `packaging/build_hip_linux.sh` passes, because
-  stdenv's default `-march=native` would bake the build machine into the store path (CMake falls back to
-  `-mavx512vpopcntdq` when it is empty, which omits BMI2 the Engram hashing wants). Its DSV41 CPU kernels
-  emit unused-variable warnings in the host pass; those are upstream's, not this package's.
+  into `hipblas-common`: the stage passes `-I${hipblas}/include -I${hipblas-common}/include` through both
+  `CMAKE_HIP_FLAGS` and `CMAKE_CXX_FLAGS` (`dsv41Includes`) — the device pass and the host pass of those
+  sources both read `hipblas/hipblas.h`, and the dsv41 targets are hand-written `add_library(... OBJECT)`
+  and `add_executable` sources CMake compiles without an imported target's include directories, so the path
+  has to name both split outputs. `hipblas-common` is a `nativeBuildInputs` entry only: it is header-only,
+  and putting it in `rocmLibs` would grow every binary's RPATH for nothing. Do not add a `-include` of
+  `strata/dsv41/hip_extra.h`: since the source builds that engine itself it force-includes that header into
+  both dsv41 targets for the HIP and CXX passes (`if(STRATA_ENABLE_HIP)` under the dsv41 target block), which
+  is where the CUDA-name mappings come from.
+- The package passes no `-march`/`-mcpu` for the CPU kernels and should not need one: `STRATA_PORTABLE=ON`
+  (upstream's own `packaging/build_hip_linux.sh` passes it too) turns off ggml's `-march=native` detection,
+  the AVX-512 and AVX2 kernels carry their own per-file `COMPILE_OPTIONS` and dispatch at runtime, and
+  stdenv's default `-march=native` would bake the build machine into the store path. Since v0.2.4.2
+  CMakeLists.txt additionally forces `GGML_BMI2` off for the DSV41 build (after the portable set, guarded on
+  `STRATA_BUILD_DSV41`, which this package always turns on): ggml's `IQ1_S`/`IQ1_M` dots use `_pdep_u64` when
+  the build has BMI2, AMD Zen 1/2 run PDEP in microcode — about 3× on the 2.00 set's CPU lane — and
+  `src/dsv41/ds4_gg_cpu.cpp` now covers those types with Strata's own rows at every token count, bit-identically.
 - The config shape differs per family, and the model package decides it through its contract (`family`,
   `packDir`, `dsparkConf`, `expertProfile`, `readySeconds`, `label`, `chatTemplate`). A DeepSeek config is
   setup.py's `install_dsv41`: `exe` at `bin/strata-dsv41`, `--pack`/`--max-context`/`--eos`/`--dspark auto`
@@ -134,7 +150,9 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `conversationSlotsGb` (`STRATA_DS4_SLOT_KEEP`/`_GB` in the config's engine `env`), and
   `autoPinSystemPrompt` (`STRATA_DS4_AUTO_PIN`, read by the server process, so it belongs in the unit's
   `Environment` rather than the engine's). The slot folder is `stateDir/ds4-slots`: the engine's own default
-  is `ds4-slots` beside the pack, and `$out/pack` is a read-only symlink into the model package.
+  is `ds4-slots` beside the pack, and `$out/pack` is a read-only symlink into the model package. The two
+  switches default to what `serve/server.py` writes: both were off in v0.2.4 and both are on since v0.2.4.2,
+  so the module keeps them null and says so rather than hardcoding a value upstream moves.
 - `--dump-logits` and the parity tests in `tools/dsv41/` (smoke, bench) need the model and a card; nothing in
   this repository runs them.
 - The assembly keeps `serve/` and `tools/` as real copies: `serve/server.py` takes

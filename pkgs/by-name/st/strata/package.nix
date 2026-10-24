@@ -46,11 +46,16 @@ let
   rocm = rocmPackages;
 
   # The repository tag. The engine's own version is a separate number (CMakeLists.txt's project
-  # version, 0.1.49 for this tag), and BUILD.json carries that one, because that is what the server
+  # version, 0.1.49.2 for this tag), and BUILD.json carries that one, because that is what the server
   # reads as the engine's version. v0.2.4 adds the DeepSeek-V4.1-Flash engine (strata-dsv41), its pack
-  # pipeline and the IST-DAS 2-bit sets; v0.2.4.1 is a hotfix of the Terminal's setup scripts only, which
-  # this package does not ship, so the pin stays on v0.2.4.
-  version = "0.2.4";
+  # pipeline and the IST-DAS 2-bit sets. v0.2.4.1 is a hotfix of the Terminal's setup scripts only, which
+  # this package does not ship. v0.2.4.2 is a DeepSeek hotfix, and it does touch what this package builds:
+  # the CPU lane of strata-dsv41 (src/dsv41/ds4_gg_cpu.cpp and CMakeLists.txt's GGML_BMI2, see below), two
+  # of the server's DeepSeek conversation defaults (serve/server.py), and tools/dsv41/pack_gguf.py, which
+  # moves the pack tool pin. Nothing that a Qwen size runs changed: the rest is the Terminal's launcher,
+  # setup.py and tools/strata_mcp.py (the MCP server the assembly copies but the server never starts), and
+  # setup.py's MIN_ENGINE and GYRO_ENGINE are as they were.
+  version = "0.2.4.2";
   # The target list as a list. A semicolon-separated string is accepted too, which is the form CMake
   # and the source's own scripts take; services.strata.hipArchs passes a list.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
@@ -64,7 +69,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-lfFu7nDXolARbJVhEnOfJGmlRgIdNLHDIpXdL4jDOyI=";
+    hash = "sha256-rjkHoWjzXoJQoJ4ArTodNhCmPG2edYo1QeRpI5O3fGk=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the
@@ -254,6 +259,12 @@ let
     "-DCMAKE_HIP_ARCHITECTURES='${archString}'"
     # llama.cpp from the store instead of a FetchContent network fetch
     "-DSTRATA_GGML_DIR=${llamaCpp}"
+    # STRATA_PORTABLE=ON decides ggml-cpu's feature flags, and since v0.2.4.2 CMakeLists.txt forces GGML_BMI2
+    # off for this build (guarded on STRATA_BUILD_DSV41, always on here): ggml's IQ1_S and IQ1_M dots use
+    # _pdep_u64 when the build has BMI2, AMD Zen 1/2 run PDEP in microcode (about 3x on the 2.00 set's CPU
+    # lane), and src/dsv41/ds4_gg_cpu.cpp now covers those types with Strata's own rows at every token count,
+    # bit-identically. Nothing here has to pass a -march or -mcpu for that: the AVX-512 and AVX2 kernels keep
+    # their own per-file flags and runtime dispatch, and the dsv41 CPU sources take none.
     # STRATA_MMQ_TQ_OVERLAY (ON here, as upstream) is what makes the MMQ prompt path cover the Gyro
     # trellis types on an upstream llama.cpp: it writes an overlay of ggml-cuda headers at configure
     # time (cmake/strata_ggml_tq_overlay.cmake). Kept at its default, and it needs nothing of ours.
@@ -503,7 +514,7 @@ runCommand "strata-${m.size}-${version}"
     sed -i -e "s|@OUT@|$out|" -e "s|@MODEL@|${m.size}|" -e "s|@PACK@|${m.packName}|" -e "s|@MODEL_NAME@|${m.modelName}|" -e "s|@S1@|${shard1}|" -e "s|@PLE@|${plePath}|" -e "s|@MMPROJ@|${mmprojName}|" -e "s|@MAXCTX@|${toString maxContext}|" -e "s|@READY@|${toString engineReady}|" $out/etc/strata/strata.json
     # the metadata setup.py's installer records and the server reads from beside the engine. "version" is
     # the engine's own number, read out of the source it was built from rather than the package's version,
-    # because the two move apart: this release is tagged v0.2.4 and its engine version is 0.1.49. The
+    # because the two move apart: this release is tagged v0.2.4.2 and its engine version is 0.1.49.2. The
     # four-component form is what setup.py compares against a model's minimum (it reads up to four
     # components), and the engine-compatibility readers in setup.py take a ";"-joined arch string as well
     # as a list since 0.2.3.1 - this file writes lists, which both versions read. The vision

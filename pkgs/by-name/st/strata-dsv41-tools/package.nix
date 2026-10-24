@@ -16,14 +16,18 @@
   fetchFromGitHub,
 }:
 let
-  # The tag these files are taken from: dsv41/ arrived with v0.2.4, so the pin is at that release. The
-  # engine tag moving does not move this - setup.py's dsv41_pack_cmd has not changed since.
-  version = "0.2.4";
+  # The tag these files are taken from: dsv41/ arrived with v0.2.4. The engine tag moving does not move
+  # this by itself - what moves it is a change to pack_gguf.py or a profile. v0.2.4.2 changed the tool: its
+  # automatic mmproj find now takes only a file whose projector is deepseek41v, so a Qwen mmproj left in a
+  # shared models folder no longer stops a DeepSeek setup (#3927, #3917). This build names no mmproj and
+  # the shard farm holds none, so the pack it produces is the same as the one at 0.2.4 - but the tool the
+  # pack came from is this one, and it is what a consumer reproducing a pack should see.
+  version = "0.2.4.2";
   src = fetchFromGitHub {
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-lfFu7nDXolARbJVhEnOfJGmlRgIdNLHDIpXdL4jDOyI=";
+    hash = "sha256-rjkHoWjzXoJQoJ4ArTodNhCmPG2edYo1QeRpI5O3fGk=";
   };
 
   # The profiles setup.py copies into the pack folder: which experts are used most, so the engine's RAM

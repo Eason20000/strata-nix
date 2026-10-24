@@ -121,9 +121,9 @@ let
     })
     # DeepSeek-V4.1 only, since v0.2.4: when another request takes the model the engine sets the displaced
     # conversation aside and takes it back at its checkpoints, so an agent that comes back to a conversation
-    # does not pay for its prompt again. The server writes the switch and the size cap (off by default, 2 GB);
-    # the folder is the one thing this package has to name itself - the engine's own default is
-    # <pack>/slots, and $out/pack is a read-only symlink into the model package.
+    # does not pay for its prompt again. The server writes the switch and the size cap (2 GB; the switch is
+    # off in 0.2.4 and on since v0.2.4.2); the folder is the one thing this package has to name itself - the
+    # engine's own default is <pack>/slots, and $out/pack is a read-only symlink into the model package.
     // (lib.optionalAttrs deepseek {
       STRATA_DS4_SLOT_DIR = "${cfg.stateDir}/ds4-slots";
     })
@@ -465,10 +465,11 @@ in
         (the engine's STRATA_DS4_SLOT_KEEP, since v0.2.4). When another request takes the model the engine writes the
         displaced conversation's checkpoint into the slot folder under services.strata.stateDir and takes it back when
         that conversation comes back, so an agent or a sub-agent that returns to a prompt does not pay for reading it
-        again (a 6.5K-token conversation is about 17 MB). Null: the server's default, off. Only strata-dsv41 reads
-        it, and this module names the folder because the engine's own default is `<pack>/slots`, which in this
-        package is a read-only symlink into the model package - STRATA_DS4_SLOT_DIR in services.strata.env puts the
-        slots elsewhere. The engine drops slots older than a week and slots belonging to another model.";
+        again (a 6.5K-token conversation is about 17 MB). Null: the server's default, which is on since
+        v0.2.4.2 (0.2.4 wrote 0). Only strata-dsv41 reads it, and this module names the folder because the
+        engine's own default is `<pack>/slots`, which in this package is a read-only symlink into the model
+        package - STRATA_DS4_SLOT_DIR in services.strata.env puts the slots elsewhere. The engine drops slots
+        older than a week and slots belonging to another model.";
     };
 
     conversationSlotsGb = lib.mkOption {
@@ -488,10 +489,10 @@ in
       description = "Whether the server pins the leading system messages of every request (the server's own
         STRATA_DS4_AUTO_PIN, since v0.2.4). An agent and the sub-agents behind the same system prompt and the
         same tools ask the identical start of the prompt, so with this on the server tells strata-dsv41 to keep a
-        checkpoint there and the next request goes back to it instead of reading that start again. Null: off, which
-        is the server's default - it only helps when many requests share one prefix, and a pin costs the engine a
-        little memory. Read by the server process, so it reaches the unit as Environment= rather than through the
-        config's env, and only the DeepSeek engine acts on it.";
+        checkpoint there and the next request goes back to it instead of reading that start again. Null: on, which
+        is the server's default since v0.2.4.2 (0.2.4 had it off) - it only helps when many requests share one
+        prefix, and a pin costs the engine a little memory. Read by the server process, so it reaches the unit as
+        Environment= rather than through the config's env, and only the DeepSeek engine acts on it.";
     };
 
     engineArgs = lib.mkOption {
