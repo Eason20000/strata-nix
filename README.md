@@ -104,6 +104,10 @@ reader keeps about 1.4 GB of VRAM that the experts would otherwise use, which is
 CPU reader under 24 GB; to ask for it outright, set `services.strata.extraConfig.vision` to the package's
 section with `exe` at `bin/strata-vision` and `gpu` false. Turn images off by making `vision` null.
 
+An `https://` picture or tool URL is checked against the machine's own CA store since v0.2.3: the server
+calls `strata_control/tls.install()` at import, and `truststore` is in the package's Python closure, so a
+TLS-hosted image needs no certificate setup on the host.
+
 The GPU reader links rocBLAS (791 MB), which the engine itself does not need — that is the only cost of
 shipping it.
 
@@ -119,7 +123,10 @@ gfx1151, where a community A/B measured 251 to 529 prompt tokens per second. Sin
 no gfx1151 table, nothing is used here until you ask: `services.strata.hipblasltTable = true`, `false` to
 refuse one. `strata-server` picks the table for the card it finds at start and exports it to the engine,
 which checks the architecture and version again and falls back to plain hipBLAS for anything the table does
-not cover. To try a table of your own, set `STRATA_HIPBLASLT_TUNING` to its path in
+not cover. Since engine 0.1.48 the engine also looks for a `tuning/` folder beside the binary it was started
+as, and takes one unless told otherwise — but `bin/strata` is a symlink, so the folder it finds is the engine
+stage's `bin`, which has no tables. They are staged beside `strata-server` alone, which is why asking is still
+the only way to get one. To try a table of your own, set `STRATA_HIPBLASLT_TUNING` to its path in
 `services.strata.env` — the server leaves that choice alone.
 
 ## As a NixOS service
@@ -160,6 +167,10 @@ variables into the generated config: `services.strata.hipWmma` (matrix-core atte
 args switch from `--resident-experts` to `--mmap-experts`). Anything else the engine reads from the
 environment goes in `services.strata.env`, which is applied after them. The fourth switch is the server's
 rather than the engine's: `services.strata.hipblasltTable` writes a config key, not an environment variable.
+
+Since v0.2.3 the engine reads the hyper-connection projections as 8-bit by itself on a Strix Halo (gfx1151),
+which its own notes measure at about 9% faster decode. It is not bit-identical to the bf16 read — a greedy
+answer can pick another token at a near tie — so `services.strata.env.STRATA_HC_Q8 = "0"` restores bf16.
 
 Rather than a card list, since v0.2.2 a machine with more than one card can say what each one is for:
 `services.strata.gpuRoles = { "1" = "main"; "0" = "helper"; }` — Main takes the last layers, the draft layer and the

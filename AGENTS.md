@@ -72,7 +72,7 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `fetchFromGitHub`, pinned to the tag matching `version`. A flake input named
   `strata` once shadowed the derivation built from it inside its own definition
   and recursed; do not reintroduce one.
-- The tag and the engine's version are different numbers: v0.2.2 builds engine 0.1.47, and
+- The tag and the engine's version are different numbers: v0.2.3 builds engine 0.1.48, and
   `bin/BUILD.json` carries the engine's, which the assembly reads out of `CMakeLists.txt`'s
   `project(strata VERSION ...)` rather than hardcoding it. The server reads that file as the engine's
   version, and `setup.py` compares it against per-model minimums (`GYRO_ENGINE` and friends), so a
@@ -89,14 +89,19 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   engine's source. Nix is input-addressed, so a stage reading `${src}/tools/iq_pack.py` re-runs over ~67 GB on
   every engine release even when the script is byte-identical. Bumping `version` in the engine package leaves
   the six model drvPaths, the pack drvPath and the mtp drvPath byte-identical; only the engine, both readers
-  and the assembly change.
+  and the assembly change. The tools pin moves only when a file it copies changes: v0.2.3 touched
+  `tools/mtp_fetch.py` alone (it installs the OS certificates for its HTTPS fetch, #3722), which this build
+  never runs over the network, so the pin stays at 0.2.1.4. Moving it later means copying
+  `strata_control/tls.py` into that tree, because that file imports it.
 - The assembly keeps `serve/` and `tools/` as real copies: `serve/server.py` takes
   `Path(__file__).resolve().parents[1]` as its root, so a symlinked `serve/` would point it at the wrong
   store path. Only the payloads are links, and the closure still contains them. Since 0.2.0 the server
   also imports `strata_control/` (`vision_reader`, `procs`, `engine_component`, `offline`) and, through
   it, `strata_cli/`, so both are copied too; only the terminal's dashboards want `rich`/`textual`, which
-  the server never imports, so the Python environment stays five packages (jinja2, regex, psutil, pillow,
-  and jsonschema, which `serve/structured.py` needs to actually validate a request's `response_format`).
+  the server never imports, so the Python environment stays six packages (jinja2, regex, psutil, pillow,
+  jsonschema, which `serve/structured.py` needs to actually validate a request's `response_format`, and
+  truststore since 0.2.3, which `strata_control/tls.py` installs so an HTTPS picture or tool URL is checked
+  against the host's CA store).
 - Store paths inside generated files must be real dependencies, not text. The
   package substitutes `@OUT@`/`@PY@` with `sed`; the service module builds its
   config with `runCommand` (a string read from the store at eval time carries no
@@ -132,7 +137,10 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   so `bin/strata-server` asks `strata_control/hipblaslt_tuning.py` which table fits the card it finds and
   exports `STRATA_HIPBLASLT_TUNING`. It stays off unless the run config says `"hipblaslt_table": true`
   (`services.strata.hipblasltTable` writes it; a `STRATA_HIPBLASLT_TABLE` environment switch overrides the
-  config), because a table changes the prompt's floating-point sums.
+  config), because a table changes the prompt's floating-point sums. Since engine 0.1.48 the engine also
+  searches for `tuning/` beside the executable it was started as (`/proc/self/exe`), and takes a table that
+  fits unless told otherwise — keep the tables out of the engine derivation: `bin/strata` is a symlink, so
+  that search resolves to the engine stage, and staging tables there would silently turn the opt-in on.
 - `hipArchs`, `model`, `mtp` and `prefillMmq` are the caller-visible knobs. `hipArchs` is a list (or a `;`-joined string). It
   is validated by the source's own `cmake/hip_backend.cmake` — gfx1100/gfx1201 by the maintainers,
   gfx1101/gfx1200 by their owners, the rest (the default `gfx1151` included) build with a warning —

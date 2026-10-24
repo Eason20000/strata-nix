@@ -37,9 +37,9 @@ let
   rocm = rocmPackages;
 
   # The repository tag. The engine's own version is a separate number (CMakeLists.txt's project
-  # version, 0.1.47 for this tag), and BUILD.json carries that one, because that is what the server
+  # version, 0.1.48 for this tag), and BUILD.json carries that one, because that is what the server
   # reads as the engine's version.
-  version = "0.2.2";
+  version = "0.2.3";
   # The target list as a list. A semicolon-separated string is accepted too, which is the form CMake
   # and the source's own scripts take; services.strata.hipArchs passes a list.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
@@ -53,7 +53,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-rZqp6GjcaDzwL9FjBxCrh3DNfF8j9QT7S0kN7BVD+vg=";
+    hash = "sha256-mBtfFfyUNv1joh54MwxSOZPpY2Pt8qmnn5f5aMxPjPo=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the
@@ -78,12 +78,16 @@ let
   # response_format json_schema against it, and without it the server says so and only checks that the
   # answer is one JSON object). No web framework - serve/server.py is the stdlib http.server. rich and
   # textual are not here: only the terminal's dashboards import them, and the server never touches those.
+  # truststore is the sixth since 0.2.3: serve/server.py calls strata_control.tls.install() at import so an
+  # HTTPS picture or tool URL is checked against the host's own CA store. requirements.txt also pins certifi
+  # as the fallback for a machine without truststore, which this closure is not.
   python = python3.withPackages (p: [
     p.jinja2
     p.regex
     p.psutil
     p.pillow
     p.jsonschema
+    p.truststore
   ]);
 
   # ---- the payload: the model package and the MTP draft layer --------------------------------
@@ -279,7 +283,7 @@ runCommand "strata-${m.size}-${version}"
     # serve/server.py and serve/lifeline.py import these two packages (engine_component, vision_reader,
     # procs, presets, offline), so they are part of the tree the server runs from. Only its terminal
     # dashboards (strata_cli/dashboard.py and friends) want rich/textual, and the server never imports
-    # those, so the Python environment stays the five packages above.
+    # those, so the Python environment stays the six packages above.
     cp -a ${src}/strata_control ${src}/strata_cli $out/
     ln -s ${model}/shards $out/models/${m.size}
     ln -s ${model}/mmproj $out/vision
@@ -344,7 +348,7 @@ runCommand "strata-${m.size}-${version}"
     sed -i -e "s|@OUT@|$out|" -e "s|@MODEL@|${m.size}|" -e "s|@PACK@|${m.packName}|" -e "s|@MODEL_NAME@|${m.modelName}|" -e "s|@S1@|${m.shard1}|" -e "s|@PLE@|${m.ple}|" -e "s|@MMPROJ@|${m.mmprojName}|" $out/etc/strata/strata.json
     # the metadata setup.py's installer records and the server reads from beside the engine. "version" is
     # the engine's own number, read out of the source it was built from rather than the package's version,
-    # because the two move apart: this release is tagged v0.2.2 and its engine is 0.1.47. The vision
+    # because the two move apart: this release is tagged v0.2.3 and its engine is 0.1.48. The vision
     # keys are what setup.py writes for a HIP engine with a GPU reader, and the server uses vision_archs to
     # decide whether the GPU reader covers the card it found (strata_control/vision_reader.py).
     engineVersion=$(sed -n 's/^[[:space:]]*project(strata VERSION \([0-9.]*\).*/\1/p' ${src}/CMakeLists.txt | head -1)
@@ -376,6 +380,12 @@ runCommand "strata-${m.size}-${version}"
     # nixpkgs' hipBLASLt 1.2.2 that is gfx1100 and gfx1201, and nothing for gfx1151, whose tables need
     # 1.4/1.5; the script prints what is missing. strata-server picks the table for the card at startup and
     # logs the reason, so the service log says once per start which table the prompt path uses.
+    #
+    # Since 0.1.48 the engine also looks for a tuning folder beside the executable it was started as, and
+    # takes one unless the run says otherwise (src/prefill/gemm.cu). It cannot reach these tables: bin/strata
+    # is a symlink, and that lookup resolves it, so the folder the engine searches is the engine stage's bin,
+    # which has no tables beside it. Keeping them in this output alone is what keeps a table opt-in -
+    # serve/server.py and the wrapper below both choose from the config's exe, a path in this output.
     PYTHONDONTWRITEBYTECODE=1 ${python}/bin/python3 ${src}/packaging/stage_tuning.py --stage $out/bin --archs "${archString}" --rocm ${rocm.hipblaslt}
     # strata-server: the Python server over the stored engine. The engine reads one table path from its
     # environment, and the card is only known at start, so the wrapper asks the server's own chooser

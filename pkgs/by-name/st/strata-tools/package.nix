@@ -16,8 +16,12 @@
 }:
 let
   # The tag these tools are taken from: the last release that changed the packing tools. It is not the
-  # engine's version and does not move with it - v0.2.2 left every file below byte-identical, so this pin
-  # stays where v0.2.1.4 put it and the two fetches are two store paths.
+  # engine's version and does not move with it - v0.2.3 left every file below byte-identical except
+  # mtp_fetch.py, which gained strata_control.tls.install() (#3722) for the HTTPS range fetches it does at
+  # install time. The build never downloads through it (strata-mtp reads the pinned shards and uses only the
+  # SHA256 table), and strata_control/ is not in this pruned tree, so importing the v0.2.3 file would fail:
+  # the pin stays where v0.2.1.4 put it and the pack and extract caches survive the release. Moving it later
+  # means copying strata_control/tls.py into this tree beside tools/.
   version = "0.2.1.4";
   src = fetchFromGitHub {
     owner = "Niko1221";

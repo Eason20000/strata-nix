@@ -271,8 +271,12 @@ in
         for the card, which a community A/B measured at 251 to 529 prompt tokens per second on Strix Halo.
         False: never. A table changes which hipBLASLt solution runs, so answers can differ in the last
         digits; the engine checks the table's architecture and hipBLASLt version against the card and falls
-        back to plain hipBLAS for anything it does not cover. To use a table of your own instead, set
-        STRATA_HIPBLASLT_TUNING to its path in services.strata.env - the server leaves that choice alone.";
+        back to plain hipBLAS for anything it does not cover. Since engine 0.1.48 the engine also looks for
+        a tuning folder beside the binary it was started as, but this package keeps its tables in the
+        assembly's bin and bin/strata is a symlink into an engine store path with none beside it, so only
+        this option reaches a table - STRATA_HIPBLASLT_TABLE in services.strata.env alone chooses nothing. To
+        use a table of your own instead, set STRATA_HIPBLASLT_TUNING to its path in services.strata.env - the
+        server leaves that choice alone.";
     };
 
     host = lib.mkOption {
@@ -408,7 +412,9 @@ in
         image support off for this machine. Its `exe` is the GPU reader and `cpu_exe` the fallback: the
         server switches to the CPU reader by itself when the GPU one does not start, so a smaller card
         needs nothing here - to ask for the CPU reader outright, set vision to the package's section with
-        exe pointing at bin/strata-vision and gpu false.";
+        exe pointing at bin/strata-vision and gpu false. Since v0.2.3 `drafting` picks the alternative
+        DFlash2 drafter, which wants a pack this package does not ship: the server says so and starts with
+        the MTP layer.";
     };
 
     extraArgs = lib.mkOption {
