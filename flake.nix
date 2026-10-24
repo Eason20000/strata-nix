@@ -29,8 +29,17 @@
         inherit (pkgs) fetchurl stdenvNoCC;
       };
       strataTools = pkgs.callPackage ./pkgs/by-name/st/strata-tools/package.nix { };
+      # The DeepSeek-V4.1 pack tool, pinned apart from the Flash-Next tools tree for the same reason: one
+      # release's change to tools/dsv41/ must not re-run ~67 GB of Flash-Next packing, and vice versa.
+      strataDsv41Tools = pkgs.callPackage ./pkgs/by-name/st/strata-dsv41-tools/package.nix { };
       modelArgs = {
         inherit strataTools strataLlamaCpp;
+      };
+      # A by-name package may only be given the arguments its lambda declares, so the DeepSeek sizes get
+      # their own argument set: their pack runs the dsv41 tool pin and needs no llama.cpp (pack_gguf.py is
+      # stdlib-only and reads the GGUF metadata itself), and the Flash-Next sizes never see that pin.
+      ds4ModelArgs = {
+        inherit strataDsv41Tools;
       };
 
       # One package per model size (pkgs/by-name/st/strata-model-<size>/): its GGUF shards, the pack cut from
@@ -44,6 +53,13 @@
         strata-model-iq3-s = pkgs.callPackage ./pkgs/by-name/st/strata-model-iq3-s/package.nix modelArgs;
         strata-model-gyro-s = pkgs.callPackage ./pkgs/by-name/st/strata-model-gyro-s/package.nix modelArgs;
         strata-model-gyro-m = pkgs.callPackage ./pkgs/by-name/st/strata-model-gyro-m/package.nix modelArgs;
+        # The DeepSeek-V4.1-Flash sets (setup.py's MULTI_FILE_FAMILIES, engine strata-dsv41): four shards plus
+        # the shared n-gram table and drafter, packed by tools/dsv41/pack_gguf.py into the folder the engine
+        # reads. The three IST-DAS sets share the table and the drafter, so those store paths are built once.
+        strata-model-ds4-iq1-m = pkgs.callPackage ./pkgs/by-name/st/strata-model-ds4-iq1-m/package.nix ds4ModelArgs;
+        strata-model-ds4-iq2-xxs = pkgs.callPackage ./pkgs/by-name/st/strata-model-ds4-iq2-xxs/package.nix ds4ModelArgs;
+        strata-model-ds4-iq2-xs = pkgs.callPackage ./pkgs/by-name/st/strata-model-ds4-iq2-xs/package.nix ds4ModelArgs;
+        strata-model-ds4-ud-q8-k-xl = pkgs.callPackage ./pkgs/by-name/st/strata-model-ds4-ud-q8-k-xl/package.nix ds4ModelArgs;
       };
 
       # The MTP draft layer: size-independent, pinned to the original checkpoint's shards and the tools pin.
@@ -74,6 +90,7 @@
         strata = strata;
         default = strata;
         strata-tools = strataTools;
+        strata-dsv41-tools = strataDsv41Tools;
         strata-mtp = mtp;
       }
       // models;

@@ -9,9 +9,12 @@ is hash-pinned, so the build is reproducible and needs no network at configure t
 - Linux, `x86_64`, Nix with flakes enabled
 - An AMD GPU whose HIP architecture is in the target list (default `gfx1100`, `gfx1151`, `gfx1201`)
 - Disk for the model, checkpoint shards and mmproj: ~124 GB of downloads for IQ2_XS, ~132 GB for
-  IQ3_XXS, ~140 GB for IQ3_S, ~114 GB for Gyro-S, ~148 GB for Gyro-M
+  IQ3_XXS, ~140 GB for IQ3_S, ~114 GB for Gyro-S, ~148 GB for Gyro-M; ~239 GB for a DeepSeek-V4.1 set
+  (IQ1_M, ~257 GB at IQ2_XXS, ~275 GB at IQ2_XS — an NVMe drive, because its 110 GB n-gram table is read
+  from the disk for every word)
 - Memory for the model: 48 GB of RAM at IQ2_XS, 60 GB at IQ3_XXS, 62 GB at IQ3_S; 27.6 GB of GPU plus
-  system RAM together at Gyro-S, 35 GB at Gyro-M
+  system RAM together at Gyro-S, 35 GB at Gyro-M; 34 GB of RAM at DSV41_IQ1_M, 40 GB at DSV41_IQ2_XXS,
+  44 GB at DSV41_IQ2_XS
 
 ## Models
 
@@ -31,6 +34,19 @@ downloads and the pack — without the engine, which is how to warm the cache be
 | `IQ3_S` | 83.6 GB | 62 GB RAM | 3.5-bit, the best quality, the slowest; wants a 64 GB PC |
 | `Gyro-S` | 58.5 GB | 27.6 GB GPU+RAM | trellis TQ1_0, the smallest; lower quality than the 2-bit sizes |
 | `Gyro-M` | 92.0 GB | 35 GB GPU+RAM | trellis TQ2_0, about IQ3_XXS quality in ~20% less memory |
+| `DSV41_IQ1_M` | 239.0 GB | 34 GB RAM | DeepSeek-V4.1-Flash, IST-DAS 1.75 bpw: code and agent work, weaker prose |
+| `DSV41_IQ2_XXS` | 256.8 GB | 40 GB RAM | DeepSeek-V4.1-Flash, IST-DAS 2.00 bpw: ~5-7 tokens a second on a 12 GB card |
+| `DSV41_IQ2_XS` | 274.0 GB | 44 GB RAM | DeepSeek-V4.1-Flash, IST-DAS 2.25 bpw: the best of the three |
+| `DSV41_UD_Q8_K_XL` | 508.4 GB | 306 GB RAM | DeepSeek-V4.1-Flash, Unsloth Dynamic 8-bit: wants hundreds of GB of RAM or several cards |
+
+The `DSV41_*` sizes are a different engine binary: `bin/strata-dsv41` (setup.py's `MULTI_FILE_FAMILIES`,
+arch `deepseek41`, ported from Project Maya) instead of `bin/strata`. Its model is four shards plus a
+110.6 GB Engram n-gram table and an 8 GB DSpark drafter that the three sets share — the pack records the
+offsets into those files, so nothing is copied, and the drafter lives inside the pack, which is why a
+DeepSeek size has no `services.strata.mtp`. Its context is 8192 (what `setup.py` checked, 64K is not tried
+yet) and its start is given an hour (`services.strata.engineReady`), because hundreds of GB are read before
+the engine says READY. It reads no picture: its GGUF ships no mmproj, so a DeepSeek config has no `vision`
+section.
 
 The Gyro files are agentionai's quantizations rather than ISTA's GSQ-RCO ones: one GGUF that carries the
 n-gram table inside it, which is why a bigger download costs less memory. Its pack is marked v5 with a
@@ -60,8 +76,12 @@ nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = impo
 
 - `hipArchs` (default `[ "gfx1100" "gfx1151" "gfx1201" ]`) — the HIP target list, validated by the
   source's own `cmake/hip_backend.cmake`
-- `model` — a model package, one of `strata-model-{iq2-xs,q2-0,iq3-xxs,iq3-s,gyro-s,gyro-m}`
-- `mtp` — the MTP draft-layer package (`strata-mtp`), size-independent
+- `model` — a model package, one of
+  `strata-model-{iq2-xs,q2-0,iq3-xxs,iq3-s,gyro-s,gyro-m,ds4-iq1-m,ds4-iq2-xxs,ds4-iq2-xs,ds4-ud-q8-k-xl}`
+- `mtp` — the MTP draft-layer package (`strata-mtp`), size-independent, and only for the Flash-Next and Gyro
+  models: DeepSeek-V4.1-Flash drafts from the DSpark layer inside its own pack, so pass `mtp = null` with a
+  `DSV41_*` model (the flake's own packages pair them correctly; the engine package refuses an MTP layer
+  beside a DeepSeek pack rather than fetching 55 GB the engine never reads)
 - `prefillMmq` (default `true`) — the GGML MMQ prompt path (`-DSTRATA_PREFILL_MMQ`)
 
 `hipArchs` and `prefillMmq` are recorded in the package's `bin/BUILD.json`, which also carries the size the
@@ -69,10 +89,12 @@ assembly was built over.
 
 The compile stages are `passthru` outputs, so a version bump can be checked without the ~120 GB of model
 downloads: `nix build .#strata.passthru.engine`, `.passthru.vision` and `.passthru.visionHip`. They are also
-the only things a version bump rebuilds: the packs and the draft layer run a separately pinned tools tree
-(`strata-tools`), so a Strata release that leaves `tools/iq_pack.py` and `tools/mtp_*.py` alone costs the
-~67 GB of pack work and the ~55 GB of checkpoint extract nothing. Move the tools pin only when those files
-change.
+the only things a version bump rebuilds: the packs and the draft layer run separately pinned tools trees
+(`strata-tools` for the Flash-Next and Gyro packs and the checkpoint extract, `strata-dsv41-tools` for the
+DeepSeek packs), so a Strata release that leaves `tools/iq_pack.py`, `tools/mtp_*.py` and `tools/dsv41/`
+alone costs the ~67 GB of pack work, the ~55 GB of checkpoint extract and the DeepSeek packs nothing. Move a
+pin only when the files its packs run change — the two pins are apart precisely so that a change to one
+line's packing does not re-run the other line's.
 
 ## Run
 
@@ -109,7 +131,8 @@ calls `strata_control/tls.install()` at import, and `truststore` is in the packa
 TLS-hosted image needs no certificate setup on the host.
 
 The GPU reader links rocBLAS (791 MB), which the engine itself does not need — that is the only cost of
-shipping it.
+shipping it. A `DSV41_*` package does not ship it at all: with no mmproj to read, the two readers are not
+linked into that assembly.
 
 ## hipBLASLt tuning tables
 
@@ -180,3 +203,16 @@ roles), and with neither set the server puts the fastest card last and never put
 `services.strata.engineNice` is another of the server's own switches: v0.2.2 starts the engine at nice +5 on a PC
 whose graphics is part of the CPU so the desktop keeps its CPU share, and `0` turns that off — what a headless
 machine wants.
+
+A `DSV41_*` model runs `bin/strata-dsv41`, and three options belong to that path only:
+`services.strata.engineReady` (how long a start may take before the server gives up waiting for READY — the
+package gives DeepSeek an hour, because hundreds of GB are read from the files before the engine answers, and
+null keeps the server's own 900 s for the smaller models), `services.strata.keepConversations`
+(and `services.strata.conversationSlotsGb`) — when another request takes the model, the engine sets the displaced
+conversation aside at its checkpoints and takes it back, so an agent that comes back to a conversation does not
+pay for its prompt again — and `services.strata.autoPinSystemPrompt`, which keeps the system prompt of a
+conversation resident so the next one starts from it. All three default to what `serve/server.py` defaults to
+(off, 2 GB, off), and the slot folder is `ds4-slots` under `services.strata.stateDir`: the engine's own default
+is beside the pack, and `$out/pack` is a read-only symlink into the model package. `services.strata.maxContext`
+is the only context knob there — `strata-dsv41` has no rope-scaling flag, and a yarn scaling a Flash-Next config
+would get past the model's trained length is not written for a DeepSeek one.

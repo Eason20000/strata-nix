@@ -30,13 +30,14 @@ Nix-specific:
 ## Repository Structure
 
 ```text
-flake.nix                          # wires the pins together and exposes packages.* (strata, strata-tools, strata-mtp and one strata-model-<size> per size) and nixosModules.strata
+flake.nix                          # wires the pins together and exposes packages.* (strata, strata-tools, strata-dsv41-tools, strata-mtp and one strata-model-<size> per size) and nixosModules.strata
 pkgs/by-name/st/strata/            # the engine and its assembly, in nixpkgs' by-name layout (this directory is what would move to nixpkgs)
   package.nix                      # the source pin, the build, and the config the server reads; hipArchs, model, mtp and prefillMmq are its parameters
   llama.cpp.nix                    # pinned llama.cpp, source-only store path, used as -DSTRATA_GGML_DIR and for gguf-py
-pkgs/by-name/st/strata-tools/      # the pinned Strata tools tree the pack and the draft-layer extract run, at its own rev
+pkgs/by-name/st/strata-tools/      # the pinned Strata tools tree the Flash-Next and Gyro pack and the draft-layer extract run, at its own rev
+pkgs/by-name/st/strata-dsv41-tools/# the same at 0.2.4, pruned to tools/dsv41 (pack_gguf.py and strata_tokenizer.py): the DeepSeek packs
 pkgs/by-name/st/strata-mtp/        # the MTP draft layer: the pinned checkpoint shards plus the extract
-pkgs/by-name/st/strata-model-<size>/  # one per size (iq2-xs, q2-0, iq3-xxs, iq3-s, gyro-s, gyro-m): its GGUF shards, its pack/tokenizer, its family mmproj
+pkgs/by-name/st/strata-model-<size>/  # one per size (iq2-xs, q2-0, iq3-xxs, iq3-s, gyro-s, gyro-m, ds4-iq1-m, ds4-iq2-xxs, ds4-iq2-xs, ds4-ud-q8-k-xl): its GGUF files, its pack/tokenizer, its family mmproj
 modules/services/strata.nix        # the services.strata NixOS module (the service as a systemd unit)
 README.md                          # build/run/service usage, and the layout table
 ```
@@ -49,18 +50,21 @@ this output layout:
 
 ```text
 bin/strata            the engine (HIP)
+bin/strata-dsv41      the second engine binary: DeepSeek-V4.1-Flash (src/dsv41, arch deepseek41)
 bin/strata-device     the device probe (--list-devices)
 bin/strata-server     the Python server wrapper
 bin/strata-vision     the image encoder (llama.cpp's mtmd), on the CPU: the fallback reader
 bin/strata-vision-hip the same encoder on the AMD GPU (ggml-hip), the reader the config names
-bin/BUILD.json        the engine version, backend, arch list, model size, picture readers and hipBLASLt
-                      version actually compiled
+bin/BUILD.json        the engine version, backend, arch list, model size and family, picture readers and
+                      hipBLASLt version actually compiled
 bin/tuning/           the hipBLASLt prompt tables matching that version, for the archs that have one
 etc/strata/strata.json  the config the server reads
-pack/<size>           the packed model and the tokenizer derived from its GGUF metadata (symlink)
-models/<size>         the pinned GGUF file(s) (symlink): two shards, or one Gyro file
-vision/               the pinned mmproj the image encoder reads (symlink)
-mtp/rt                the packed MTP draft layer (symlink)
+pack/<name>           the packed model and the tokenizer derived from its GGUF metadata (symlink). For a
+                      DeepSeek size this is pack/maya-ds4/ and its name is setup.py's tag plus the set
+models/<name>         the pinned GGUF file(s) (symlink): two shards, one Gyro file, or a DeepSeek set with
+                      the Engram table and the drafter beside it
+vision/               the pinned mmproj the image encoder reads (symlink); absent for a DeepSeek size
+mtp/rt                the packed MTP draft layer (symlink); absent for a DeepSeek size
 data/expert-profile.bin
 serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
                       the upstream Python tree, run from the store (real copies)
@@ -72,13 +76,15 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `fetchFromGitHub`, pinned to the tag matching `version`. A flake input named
   `strata` once shadowed the derivation built from it inside its own definition
   and recursed; do not reintroduce one.
-- The tag and the engine's version are different numbers: v0.2.3.1 builds engine 0.1.48.1, and
+- The tag and the engine's version are different numbers: v0.2.4 builds engine 0.1.49, and
   `bin/BUILD.json` carries the engine's, which the assembly reads out of `CMakeLists.txt`'s
   `project(strata VERSION ...)` rather than hardcoding it. The server reads that file as the engine's
   version, and `setup.py` compares it against per-model minimums (`GYRO_ENGINE` and friends), so a
   hardcoded package version there would be wrong. setup.py reads up to four components, so the
-  four-part number a Control-only hotfix stamps (0.2.3.1 is engine 0.1.48.1 over byte-identical
-  engine sources) compares correctly against a three-part minimum.
+  four-part number a Control-only hotfix stamps (v0.2.4.1 is engine 0.1.49.1 over engine sources only
+  the Terminal package was missing files from) compares correctly against a three-part minimum.
+  The packages pin the tag, not the newest tag: pin v0.2.4.1 only when a hotfix touches something this
+  build copies.
 - Payloads enter the build as `linkFarm` directories, never as bare files in
   `buildInputs`: stdenv `source`s every bare file there as a setup hook.
 - `configurePhase = "true"` is deliberate. stdenv's default configure would run
@@ -87,16 +93,50 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   stay a `stdenv.mkDerivation` with `propagatedBuildInputs = rocmLibs`, which is what patches the RPATH; a
   `runCommand` would not.
 - The pack and the draft-layer extract are not stages of the engine package at all: they live in the model
-  packages and `strata-mtp`, which take the pinned `strata-tools` store path as an argument and never see the
+  packages and `strata-mtp`, which take a pinned `strata-tools` store path as an argument and never see the
   engine's source. Nix is input-addressed, so a stage reading `${src}/tools/iq_pack.py` re-runs over ~67 GB on
   every engine release even when the script is byte-identical. Bumping `version` in the engine package leaves
-  the six model drvPaths, the pack drvPath and the mtp drvPath byte-identical; only the engine, both readers
-  and the assembly change. The tools pin moves only when a file it copies changes: v0.2.3 touched
-  `tools/mtp_fetch.py` alone (it installs the OS certificates for its HTTPS fetch, #3722), which this build
-  never runs over the network, so the pin stays at 0.2.1.4. v0.2.3.1 touched only the two setup test files
-  in `tools/`, neither of which the pruned tree copies, so the pack and extract caches survive that one too.
-  Moving it later means copying
-  `strata_control/tls.py` into that tree, because that file imports it.
+  the model drvPaths, the pack drvPath and the mtp drvPath byte-identical; only the engine, both readers
+  and the assembly change. There are two tools pins because the two model lines pack with different files:
+  `strata-tools` (0.2.4) carries `tools/iq_pack.py`, `tools/gguf_reader.py`, `tools/_paths.py`, `tools/mtp_*`
+  and `tools/strata_tokenizer.py` for the Flash-Next and Gyro packs and the checkpoint extract,
+  `strata-dsv41-tools` (0.2.4) carries `tools/dsv41/pack_gguf.py`, `tools/dsv41/_paths.py` and
+  `tools/strata_tokenizer.py` for the DeepSeek packs, which need no numpy. Move a pin only when the files its
+  packs run change: v0.2.3 touched `tools/mtp_fetch.py` alone (OS certificates for its HTTPS fetch, #3722),
+  which this build never runs over the network, so that pin stayed at 0.2.1.4 through two releases; v0.2.4
+  added the `deepseek-v3` pre-tokenizer regex list to `tools/strata_tokenizer.py`, which the Flash-Next pack
+  runs too, so both pins moved to 0.2.4 and every pack re-ran. Moving the first pin further means copying
+  `strata_control/tls.py` into that tree, because `strata_tokenizer.py` does not import it but the server does.
+- Since v0.2.4 the engine derivation builds two binaries: `strata` and `strata-dsv41`
+  (`-DSTRATA_BUILD_DSV41=ON`, which upstream leaves OFF). Always build it — the assembly links it for every
+  size, and a DeepSeek config runs it. Its vendored kernels link hipBLAS, and nixpkgs splits that header
+  into `hipblas-common`: pass `-DCMAKE_HIP_COMPILER_FLAGS=-I<hipblas-common>/include -include <src>/include/strata/dsv41/hip_extra.h`
+  (`hipExtraFlags`). Without the include, clang looks in `/opt/rocm` while compiling; without the forced
+  include, `hipblas/hipblas.h` itself fails the same way, and forcing it at configure is not enough because
+  the kernels are `add_library(... OBJECT)` sources CMake compiles directly. `hipblas-common` is a
+  `nativeBuildInputs` entry only: it is header-only, and putting it in `rocmLibs` would grow every binary's
+  RPATH for nothing.
+- The DeepSeek engine wants the CPU kernel flags to name a target, not the host: `ROCM_PLATFORM_ARGS` is
+  `-mavx512vpopcntdq;-mbmi2` here, the list the source's own `packaging/build_hip_linux.sh` passes, because
+  stdenv's default `-march=native` would bake the build machine into the store path (CMake falls back to
+  `-mavx512vpopcntdq` when it is empty, which omits BMI2 the Engram hashing wants). Its DSV41 CPU kernels
+  emit unused-variable warnings in the host pass; those are upstream's, not this package's.
+- The config shape differs per family, and the model package decides it through its contract (`family`,
+  `packDir`, `dsparkConf`, `expertProfile`, `readySeconds`, `label`, `chatTemplate`). A DeepSeek config is
+  setup.py's `install_dsv41`: `exe` at `bin/strata-dsv41`, `--pack`/`--max-context`/`--eos`/`--dspark auto`
+  (plus `--dspark-conf 0.65` for an IST-DAS set), `arch deepseek41`, no `--native`, no `--ple-gguf` (the
+  pack's own tensor map names every file, including the Engram table and the drafter beside the shards), no
+  `vision` section and no `--vision` (that family ships no mmproj — `tools/dsv41/vision_pack.py` cuts one
+  from DeepSeek's own checkpoint), and `engine_ready_s` 3600 because hundreds of GB are read before READY.
+  `--rope-scale` and `--yarn` are Flash-Next only: `strata-dsv41` has no such flag, so the service writes no
+  rope scaling for a `DSV41_*` size however big its `maxContext` is.
+- The service's DeepSeek switches: `engineReady` (the server's READY wait), `keepConversations` and
+  `conversationSlotsGb` (`STRATA_DS4_SLOT_KEEP`/`_GB` in the config's engine `env`), and
+  `autoPinSystemPrompt` (`STRATA_DS4_AUTO_PIN`, read by the server process, so it belongs in the unit's
+  `Environment` rather than the engine's). The slot folder is `stateDir/ds4-slots`: the engine's own default
+  is `ds4-slots` beside the pack, and `$out/pack` is a read-only symlink into the model package.
+- `--dump-logits` and the parity tests in `tools/dsv41/` (smoke, bench) need the model and a card; nothing in
+  this repository runs them.
 - The assembly keeps `serve/` and `tools/` as real copies: `serve/server.py` takes
   `Path(__file__).resolve().parents[1]` as its root, so a symlinked `serve/` would point it at the wrong
   store path. Only the payloads are links, and the closure still contains them. Since 0.2.0 the server
@@ -161,14 +201,18 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   pack derivation (`strata-pack-<pack>`, the size lowercased without underscores — one name for all sizes
   would let the caches collide) and exposes `passthru.strata` as the contract the assembly reads: `size`,
   `packName`, `modelName`, `minEngine`, `ram`, `download`, `memoryNote`, `shard1`, `ple`, `mmprojName`, and the
-  `shards`/`pack`/`mmprojDir` store paths. The assembly links `${model}/shards`, `${model}/pack`,
-  `${model}/mmproj` and `${mtp}`, and fails the build when the engine is older than `minEngine` (setup.py's
-  `MIN_ENGINE` and `GYRO_ENGINE`). Switching size rebuilds the assembly alone: the engine, both encoders and
-  the draft layer stay cached.
-- What differs between the two model lines is written in each model package, mirroring `setup.py`'s
-  `FAMILIES`/`MODELS`: the repository and its pinned revision, the published file names, the shard count,
-  the `model_name` prefix, and any extra `iq_pack.py` flag. It repeats per file rather than living in one
-  shared table because a `by-name` package may only use its function arguments; the mmproj pin repeats the
+  `shards`/`pack`/`mmprojDir` store paths, plus `family` and the DeepSeek-only `packDir`, `dsparkConf`,
+  `expertProfile`, `readySeconds`, `label` and `chatTemplate`. A model package with no `family` is a
+  Flash-Next one. The assembly links `${model}/shards`, `${model}/pack`, `${model}/mmproj` and `${mtp}` (the
+  last two absent when the model has no `mmprojName` or `mmprojDir`), and fails the build when the engine is
+  older than `minEngine` (setup.py's `MIN_ENGINE` and `GYRO_ENGINE`). It refuses an `mtp` beside a DeepSeek
+  model rather than fetching the 55 GB checkpoint extract the engine never reads, and takes
+  `data/expert-profile.bin` from the model only when the model does not ship its own profile. Switching size
+  rebuilds the assembly alone: the engine, both encoders and the draft layer stay cached.
+- What differs between the three model lines is written in each model package, mirroring `setup.py`'s
+  `FAMILIES`/`MODELS`/`MULTI_FILE_FAMILIES`: the repository and its pinned revision, the published file names,
+  the shard count, the `model_name` prefix, and any extra pack flag. It repeats per file rather than living in
+  one shared table because a `by-name` package may only use its function arguments; the mmproj pin repeats the
   same way and collapses to one store path. Shard 2 is byte-identical in every GSQ-RCO size (the PLE table
   alone), so every size pins the same file. Gyro (agentionai's trellis TQ quants) is one
   GGUF that holds the n-gram table, so `--ple-gguf` points at the same file as `--native`, its pack needs
@@ -177,14 +221,24 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   families. The trellis MMQ prompt kernels come from `cmake/strata_ggml_tq_overlay.cmake`, which writes an
   overlay of the pinned llama.cpp's ggml-cuda headers at configure time; `STRATA_MMQ_TQ_OVERLAY` is ON
   upstream and this package leaves it at its default.
+- DeepSeek-V4.1-Flash is the third line: four shards per set plus three files every set shares — the 110.6 GB
+  Engram table, the 8 GB DSpark drafter and shard 1 of Unsloth's UD-Q8_K_XL set, of which only the GGUF
+  metadata is read (the Engram table is written as MXFP4 for the 2-bit sets, whose shards do not hold it).
+  Nothing is copied into the pack: `pack_gguf.py` records offsets into the files beside it, so the pack is a
+  few MB and the shard farm must carry the shared files under their published names. The three IST-DAS sets
+  share those files, so they collapse to three store paths; the Unsloth set pins its own nine shards. Its
+  pack derivation is `strata-pack-dsv41-<set>` (one name per set: each reads different shards), and the pack
+  folder inside the model package is `maya-ds4/`, which is what setup.py names it — one folder for every set,
+  so the derivation keeps the set's name and `packName` carries both.
 - `llama.cpp.nix` is `import`ed directly by the engine package, the flake and the service module. That is
   fine here, but a nixpkgs `by-name` package may only use its function arguments, so it would have to
   become its own `by-name` entry to be upstreamed. `strata-tools`, `strata-mtp` and the model packages
   already follow that rule: they take `strataTools` and `strataLlamaCpp` as arguments, which the flake and
   the module pass in.
-- The model and draft-layer packages carry `unfreeRedistributable` meta (the Qwen Community License), so
-  anything building them needs unfree allowed; this flake imports nixpkgs with `config.allowUnfree = true`
-  and a consumer's configuration needs the same. The engine, the readers and the tools pin stay MIT.
+- The model and draft-layer packages carry `unfreeRedistributable` meta (the Qwen Community License, and
+  DeepSeek's model license for the `ds4-*` packages), so anything building them needs unfree allowed; this
+  flake imports nixpkgs with `config.allowUnfree = true` and a consumer's configuration needs the same. The
+  engine, the readers and the tools pins stay MIT.
 - The output is read-only: the service can write only to `services.strata.stateDir`
   (`/var/lib/strata`). The GPU is reached through the kernel driver, so the unit
   keeps `/dev/kfd` and `/dev/dri` visible (no `PrivateDevices`), needs the
@@ -200,16 +254,19 @@ nix build .#strata.passthru.engine # the compile stages alone (also .vision, .vi
 nix build .#strata --dry-run       # does this change invalidate the derivation? (nothing printed = cached)
 nix run .#strata -- --help         # the engine's usage, from the store (no GPU needed)
 nix flake check --no-build         # eval only: checks the derivation and the NixOS module
+
+# the server's own plumbing without a GPU or a model: --engine mock answers from the config's tokenizer
+nix shell .#strata --command strata-server --engine mock --port 8321
 ```
 
 Plain `nix flake check` builds the package, so use `--no-build` for the quick
 check.
 
-A change to a model package's recipe re-runs its pack over ~67 GB of model data; a
+A change to a model package's recipe re-runs its pack over ~67 GB of model data (a DeepSeek pack reads
+through its set's shards and the shared 110 GB Engram table, and needs that table downloaded first); a
 change to a pin re-downloads. An engine release touches neither: the pack and the
-extract run the `strata-tools` pin, and you move that pin only when `tools/iq_pack.py`
-or `tools/mtp_*` change, which re-runs the pack for every size and the checkpoint
-extract once. Check with `--dry-run` before starting a rebuild.
+extract run the tools pins, and you move a pin only when the files its packs run change, which re-runs the
+packs of that line and the checkpoint extract once. Check with `--dry-run` before starting a rebuild.
 
 ```sh
 # another card: hipArchs is a callPackage parameter of the engine package. Use the flake's locked nixpkgs, not
@@ -219,6 +276,10 @@ nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = impo
 # another model size: the payload alone (its downloads and its pack, no engine), then assemble over it
 nix build .#strata-model-iq3-s
 nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = import f.inputs.nixpkgs { system = "x86_64-linux"; config.allowUnfree = true; }; p = f.packages.x86_64-linux; in pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { model = p.strata-model-iq3-s; mtp = p.strata-mtp; }'
+
+# a DeepSeek size: its own pack, and no draft layer (the package refuses one)
+nix build .#strata-model-ds4-iq1-m
+nix build --impure --expr 'let f = builtins.getFlake (toString ./.); pkgs = import f.inputs.nixpkgs { system = "x86_64-linux"; config.allowUnfree = true; }; p = f.packages.x86_64-linux; in pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { model = p.strata-model-ds4-iq1-m; mtp = null; }'
 
 # re-pin a hash after changing a pin
 nix-prefetch-url --unpack https://github.com/Niko1221/Strata/archive/v<version>.tar.gz
