@@ -72,11 +72,13 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `fetchFromGitHub`, pinned to the tag matching `version`. A flake input named
   `strata` once shadowed the derivation built from it inside its own definition
   and recursed; do not reintroduce one.
-- The tag and the engine's version are different numbers: v0.2.3 builds engine 0.1.48, and
+- The tag and the engine's version are different numbers: v0.2.3.1 builds engine 0.1.48.1, and
   `bin/BUILD.json` carries the engine's, which the assembly reads out of `CMakeLists.txt`'s
   `project(strata VERSION ...)` rather than hardcoding it. The server reads that file as the engine's
   version, and `setup.py` compares it against per-model minimums (`GYRO_ENGINE` and friends), so a
-  hardcoded package version there would be wrong.
+  hardcoded package version there would be wrong. setup.py reads up to four components, so the
+  four-part number a Control-only hotfix stamps (0.2.3.1 is engine 0.1.48.1 over byte-identical
+  engine sources) compares correctly against a three-part minimum.
 - Payloads enter the build as `linkFarm` directories, never as bare files in
   `buildInputs`: stdenv `source`s every bare file there as a setup hook.
 - `configurePhase = "true"` is deliberate. stdenv's default configure would run
@@ -91,7 +93,9 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   the six model drvPaths, the pack drvPath and the mtp drvPath byte-identical; only the engine, both readers
   and the assembly change. The tools pin moves only when a file it copies changes: v0.2.3 touched
   `tools/mtp_fetch.py` alone (it installs the OS certificates for its HTTPS fetch, #3722), which this build
-  never runs over the network, so the pin stays at 0.2.1.4. Moving it later means copying
+  never runs over the network, so the pin stays at 0.2.1.4. v0.2.3.1 touched only the two setup test files
+  in `tools/`, neither of which the pruned tree copies, so the pack and extract caches survive that one too.
+  Moving it later means copying
   `strata_control/tls.py` into that tree, because that file imports it.
 - The assembly keeps `serve/` and `tools/` as real copies: `serve/server.py` takes
   `Path(__file__).resolve().parents[1]` as its root, so a symlinked `serve/` would point it at the wrong

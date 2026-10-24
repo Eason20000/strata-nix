@@ -37,9 +37,11 @@ let
   rocm = rocmPackages;
 
   # The repository tag. The engine's own version is a separate number (CMakeLists.txt's project
-  # version, 0.1.48 for this tag), and BUILD.json carries that one, because that is what the server
-  # reads as the engine's version.
-  version = "0.2.3";
+  # version, 0.1.48.1 for this tag), and BUILD.json carries that one, because that is what the server
+  # reads as the engine's version. v0.2.3.1 is a hotfix of the Terminal's Control only (#3810: setup.py
+  # read BUILD.json's `archs`/`vision_archs` one character at a time when a packaging recipe wrote them
+  # as one ";"-joined string): the engine sources are the 0.1.48 ones, and only the stamped number moved.
+  version = "0.2.3.1";
   # The target list as a list. A semicolon-separated string is accepted too, which is the form CMake
   # and the source's own scripts take; services.strata.hipArchs passes a list.
   archList = if builtins.typeOf hipArchs == "string" then lib.splitString ";" hipArchs else hipArchs;
@@ -53,7 +55,7 @@ let
     owner = "Niko1221";
     repo = "Strata";
     rev = "v${version}";
-    hash = "sha256-mBtfFfyUNv1joh54MwxSOZPpY2Pt8qmnn5f5aMxPjPo=";
+    hash = "sha256-/XIjcm1AWS//7AA734FhHCrQlFdylqiPiVVzYksHiAA=";
   };
 
   # The HIP target list is validated by the source's own cmake/hip_backend.cmake: gfx1100 and gfx1201 by the
@@ -348,7 +350,10 @@ runCommand "strata-${m.size}-${version}"
     sed -i -e "s|@OUT@|$out|" -e "s|@MODEL@|${m.size}|" -e "s|@PACK@|${m.packName}|" -e "s|@MODEL_NAME@|${m.modelName}|" -e "s|@S1@|${m.shard1}|" -e "s|@PLE@|${m.ple}|" -e "s|@MMPROJ@|${m.mmprojName}|" $out/etc/strata/strata.json
     # the metadata setup.py's installer records and the server reads from beside the engine. "version" is
     # the engine's own number, read out of the source it was built from rather than the package's version,
-    # because the two move apart: this release is tagged v0.2.3 and its engine is 0.1.48. The vision
+    # because the two move apart: this release is tagged v0.2.3.1 and its engine version is 0.1.48.1. The
+    # four-component form is what setup.py compares against a model's minimum (it reads up to four
+    # components), and the engine-compatibility readers in setup.py take a ";"-joined arch string as well
+    # as a list since 0.2.3.1 - this file writes lists, which both versions read. The vision
     # keys are what setup.py writes for a HIP engine with a GPU reader, and the server uses vision_archs to
     # decide whether the GPU reader covers the card it found (strata_control/vision_reader.py).
     engineVersion=$(sed -n 's/^[[:space:]]*project(strata VERSION \([0-9.]*\).*/\1/p' ${src}/CMakeLists.txt | head -1)
