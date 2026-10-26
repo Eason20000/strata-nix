@@ -197,6 +197,7 @@ let
           --argjson env '${builtins.toJSON (perfEnv // cfg.env)}' \
           --argjson extra '${builtins.toJSON (tuningCfg // cfg.extraConfig)}' \
           --argjson args '${builtins.toJSON cfg.engineArgs}' \
+          --argjson engine_extra '${builtins.toJSON cfg.extraEngineArgs}' \
           --argjson model '${builtins.toJSON cfg.modelName}' \
           --argjson roles '${builtins.toJSON cfg.gpuRoles}' \
           --argjson ctx '${builtins.toJSON cfg.maxContext}' \
@@ -221,7 +222,7 @@ let
                 else []
                 end);
            def engine_args($base):
-             (if $args != null then $args else ($base.args // []) end)
+             ((if $args != null then $args else ($base.args // []) end) + $engine_extra)
              | (if $ctx == null then [] else context_args($ctx; $trained; $rope) end) as $set
              | reduce $set[] as $kv (.; set_arg($kv[0]; $kv[1]));
            $base[0]
@@ -535,7 +536,22 @@ in
       description = "The engine's arguments, replacing the package's list entirely: write out every flag the run
         needs, not only the ones you change, and read --pack, --native and --ple-gguf out of the package's
         etc/strata/strata.json rather than retyping them. services.strata.maxContext is the cheaper way to move one
-        flag. Null: the package's own, unchanged.";
+        flag; services.strata.extraEngineArgs appends flags without replacing the list. Null: the package's own,
+        unchanged.";
+    };
+
+    extraEngineArgs = lib.mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [
+        "--vram-reserve-mib"
+        "2048"
+      ];
+      description = "Extra engine arguments appended after the package's args (or after engineArgs, when set). The
+        engine keeps the last value of a repeated flag, so these win over the package's own. services.strata.maxContext
+        is applied after this and still owns --max-context. Use it for VRAM and KV controls the module does not model:
+        --vram-reserve-mib N for Flash-Next, Swift, Coder, Unsloth and Gyro; --expert-vram GiB or --expert-slots N for
+        Qwen3.6; and --reserve-mib N or --vram-experts F for DeepSeek-V4.1-Flash.";
     };
 
     modelName = lib.mkOption {

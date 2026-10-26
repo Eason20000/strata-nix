@@ -144,3 +144,15 @@ writable place. Other useful options: `services.strata.package` (any assembled p
 `services.strata.maxContext`, `services.strata.port`/`host`, `services.strata.gpu` or
 `services.strata.gpuRoles`, `services.strata.env` for anything else the engine reads from the
 environment, and `services.strata.extraConfig` for the config the server reads.
+
+For engine flags the module does not model, append them without replacing the package's
+arguments:
+
+```nix
+services.strata.extraEngineArgs = [
+  "--vram-reserve-mib" "2048"  # Flash-Next, Swift, Coder, Unsloth and Gyro
+];
+```
+
+`services.strata.engineArgs` still replaces the whole list when you need to remove a flag; the
+VRAM knobs differ by family (`--expert-vram` for Qwen3.6, `--reserve-mib` for DeepSeek-V4.1).
