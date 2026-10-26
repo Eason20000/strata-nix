@@ -191,6 +191,7 @@ runCommand "strata-model-${size}"
     };
     # the contract the Strata assembly reads: see the header
     passthru.strata = {
+      key = "DeepSeek41_IQ2_XXS";
       inherit
         size
         packName
