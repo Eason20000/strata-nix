@@ -12,10 +12,9 @@
   outputs =
     { self, nixpkgs }:
     let
-      # allowUnfree because the model packages say what they are: the GGUF files carry the Qwen Community
-      # License, so their meta is unfreeRedistributable and nixpkgs refuses to evaluate them otherwise. A
-      # consumer building these packages from their own flake or NixOS configuration needs the same switch
-      # (nixpkgs.config.allowUnfree = true); the engine, the image readers and the tools pin stay MIT.
+      # allowUnfree because most model packages carry unfree licenses: Qwen Community License for the
+      # original, Coder, Unsloth and Gyro files, Swift Open License for Swift, and DeepSeek's model license
+      # for the DeepSeek sets. Qwen3.6 is Apache 2.0. The engine, the image readers and the tools pin stay MIT.
       pkgs = import nixpkgs {
         system = "x86_64-linux";
         config.allowUnfree = true;
@@ -30,7 +29,7 @@
       };
       strataTools = pkgs.callPackage ./pkgs/by-name/st/strata-tools/package.nix { };
       # The DeepSeek-V4.1 pack tool, pinned apart from the Flash-Next tools tree for the same reason: one
-      # release's change to tools/dsv41/ must not re-run ~67 GB of Flash-Next packing, and vice versa.
+      # release's change to tools/dsv41/ must not re-run the Flash-Next line's packing, and vice versa.
       strataDsv41Tools = pkgs.callPackage ./pkgs/by-name/st/strata-dsv41-tools/package.nix { };
       modelArgs = {
         inherit strataTools strataLlamaCpp;
@@ -94,7 +93,7 @@
       # default [ "gfx1100" "gfx1151" "gfx1201" ] and true; for another card, callPackage it yourself:
       #   pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = strataPkgs.strata-model-qwen-iq3-s; inherit (strataPkgs) strata-mtp; }
       # In a NixOS configuration, services.strata.hipArchs, services.strata.prefillMmq and
-      # services.strata.model (a size string the module maps to the matching model package) do the same. The target list is validated by the source's own
+      # services.strata.model (a canonical model name the module maps to the matching model package) do the same. The target list is validated by the source's own
       # hip_backend.cmake (gfx1100 + gfx1201 maintainer-validated, gfx1101 + gfx1200 community-validated,
       # the rest - gfx1151 included - build with a warning; docs/AMD_HIP.md), and is recorded in the
       # package's bin/BUILD.json.

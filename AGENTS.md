@@ -97,12 +97,14 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `runCommand` would not.
 - The pack and the draft-layer extract are not stages of the engine package at all: they live in the model
   packages and `strata-mtp`, which take a pinned `strata-tools` store path as an argument and never see the
-  engine's source. Nix is input-addressed, so a stage reading `${src}/tools/iq_pack.py` re-runs over ~67 GB on
-  every engine release even when the script is byte-identical. Bumping `version` in the engine package leaves
-  the model drvPaths, the pack drvPath and the mtp drvPath byte-identical; only the engine, both readers
-  and the assembly change. There are two tools pins because the two model lines pack with different files:
+  engine's source. Nix is input-addressed, so a stage reading `${src}/tools/iq_pack.py` re-runs the pack over
+  the model data on every engine release even when the script is byte-identical. Bumping `version` in the
+  engine package leaves the model drvPaths, the pack drvPath and the mtp drvPath byte-identical; only the
+  engine, both readers and the assembly change. There are two tools pins because the Flash-Next-line and
+  DeepSeek lines pack with different files:
   `strata-tools` (0.2.1.4) carries `tools/iq_pack.py`, `tools/gguf_reader.py`, `tools/_paths.py`, `tools/mtp_*`
-  and `tools/strata_tokenizer.py` for the Flash-Next and Gyro packs and the checkpoint extract,
+  and `tools/strata_tokenizer.py` for the Flash-Next-line packs (original, Swift, Coder, Unsloth, Gyro), the
+  Qwen3.6 tokenizer, and the checkpoint extract,
   `strata-dsv41-tools` (0.2.4.2) carries `tools/dsv41/pack_gguf.py`, `tools/dsv41/_paths.py` and
   `tools/strata_tokenizer.py` for the DeepSeek packs, which need no numpy. Move a pin only when the files its
   packs run change: v0.2.3 touched `tools/mtp_fetch.py` alone (OS certificates for its HTTPS fetch, #3722),
@@ -111,7 +113,7 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   runs too, so it is a file the first pin holds — but that branch only fires for a GGUF whose pre-tokenizer
   name starts with `deepseek`, so a Qwen pack takes the same `QWEN35_PATTERN` either way and the pin stayed
   at 0.2.1.4, which keeps those packs and the checkpoint extract cached. Moving it anyway re-runs every
-  Flash-Next and Gyro pack over ~67 GB and the ~55 GB extract for output that is byte-identical. Moving the
+  Flash-Next-line pack over its model data and the ~55 GB extract for output that is byte-identical. Moving the
   first pin further also means copying `strata_control/tls.py` into that tree, because `strata_tokenizer.py`
   does not import it but the server does. v0.2.4.2 changed `tools/dsv41/pack_gguf.py` — its automatic mmproj
   find now takes only a file whose projector is `deepseek41v` (#3927) — and that is the tool the second pin
@@ -137,8 +139,8 @@ serve/ tools/ strata_control/ strata_cli/ chat.py requirements.txt
   `STRATA_BUILD_DSV41`, which this package always turns on): ggml's `IQ1_S`/`IQ1_M` dots use `_pdep_u64` when
   the build has BMI2, AMD Zen 1/2 run PDEP in microcode — about 3× on the 2.00 set's CPU lane — and
   `src/dsv41/ds4_gg_cpu.cpp` now covers those types with Strata's own rows at every token count, bit-identically.
-- The config shape differs per family, and the model package decides it through its contract (`family`,
-  `packDir`, `dsparkConf`, `expertProfile`, `readySeconds`, `label`, `chatTemplate`). A DeepSeek config is
+- The config shape differs per family, and the model package decides it through its contract (`key`, `family`,
+  `expertProfile`, and for Qwen36 `arch`, `ownPath`, `mtpCount`; DeepSeek's `dsparkConf`). A DeepSeek config is
   setup.py's `install_dsv41`: `exe` at `bin/strata-dsv41`, `--pack`/`--max-context`/`--eos`/`--dspark auto`
   (plus `--dspark-conf 0.65` for an IST-DAS set), `arch deepseek41`, no `--native`, no `--ple-gguf` (the
   pack's own tensor map names every file, including the Engram table and the drafter beside the shards), no
@@ -289,8 +291,8 @@ nix shell .#strata --command strata-server --engine mock --port 8321
 Plain `nix flake check` builds the package, so use `--no-build` for the quick
 check.
 
-A change to a model package's recipe re-runs its pack over ~67 GB of model data (a DeepSeek pack reads
-through its set's shards and the shared 110 GB Engram table, and needs that table downloaded first); a
+A change to a model package's recipe re-runs its pack over its model data (a DeepSeek pack also reads through
+its set's shards and the shared 110 GB Engram table, and needs that table downloaded first); a
 change to a pin re-downloads. An engine release touches neither: the pack and the
 extract run the tools pins, and you move a pin only when the files its packs run change, which re-runs the
 packs of that line and the checkpoint extract once. Check with `--dry-run` before starting a rebuild.

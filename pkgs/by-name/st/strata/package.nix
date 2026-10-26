@@ -1,12 +1,13 @@
 # Strata: the HIP inference engines, their Python server and the image encoders, assembled over a model
 # package and an MTP draft-layer package. One derivation per stage so the expensive ones cache on their own,
 # and the model and the draft layer are separate packages passed in: an engine release never re-runs the
-# ~67 GB of pack work, and a model change rebuilds nothing compiled.
+# model packing, and a model change rebuilds nothing compiled.
 #
-# One build carries both engines - `strata` for the Flash-Next and Gyro families, `strata-dsv41` for
-# DeepSeek-V4.1-Flash - and the model package's family decides which one the config starts.
+# One build carries both engines - `strata` for the Flash-Next line (original, Swift, Coder, Unsloth, Gyro)
+# and Qwen3.6, `strata-dsv41` for DeepSeek-V4.1-Flash - and the model package's family decides which one the
+# config starts.
 #
-#   pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = pkgs.strata-model-iq3-s; mtp = pkgs.strata-mtp; prefillMmq = false; }
+#   pkgs.callPackage ./pkgs/by-name/st/strata/package.nix { hipArchs = [ "gfx1100" "gfx1201" ]; model = pkgs.strata-model-qwen-iq3-s; mtp = pkgs.strata-mtp; prefillMmq = false; }
 #
 # hipArchs and prefillMmq reach the compiled stages, model and mtp the config and the closure. Pass
 # mtp = null for a family that drafts from its own pack.

@@ -305,11 +305,11 @@ in
             modelAliases.${value}
         else
           value;
-      description = "Which model to serve. It picks the model package the default package is assembled over -
-        pkgs/by-name/st/strata-model-<size>/, carrying that size's pinned GGUF shards, the pack and tokenizer cut
-        from them, and the image encoder - so switching size keeps the engine, both picture readers and the draft
-        layer cached. See the README's model table for the memory and download of each size. The canonical names
-        are family-prefixed (Qwen_*, Swift_*, Coder_*, Unsloth_*, Gyro_*, Qwen36_*, DeepSeek41_*); the old names
+      description = "Which model to serve. It picks the model package the default package is assembled over,
+        carrying that size's pinned GGUF shards, the pack and tokenizer cut from them, and the image encoder -
+        so switching size keeps the engine, both picture readers and the draft layer cached. See the README's
+        model table for the memory and download of each size. The canonical names are family-prefixed
+        (Qwen_*, Swift_*, Coder_*, Unsloth_*, Gyro_*, Qwen36_*, DeepSeek41_*); the old names
         (IQ2_XS, Gyro-S, DSV41_*, ...) still work but evaluate with a deprecation warning. A DeepSeek41_* size is
         DeepSeek-V4.1-Flash: a different engine binary, four shards plus a 110 GB n-gram table that stays on disk,
         and the drafter inside that pack instead of services.strata.mtp. A Qwen36_* size is Qwen3.6-35B-A3B: the
@@ -467,7 +467,7 @@ in
       default = null;
       example = 32768;
       description = "The context window in tokens: how much one request can hold (the conversation, the files,
-        the tool output). Null: the package's own - 131072 for the Flash-Next and Gyro sizes, 32768 for a
+        the tool output). Null: the package's own - 131072 for the Flash-Next-line and Gyro sizes, 32768 for a
         Qwen36_* size, and 8192 for a DeepSeek41_* size. It rewrites --max-context inside the package's own
         argument list and leaves the rest as they are, so it composes with services.strata.engineArgs, which it
         is applied after. The sizes setup.py offers are 8192, 32768, 65536, 131072, 204800, 262144, 393216 and
